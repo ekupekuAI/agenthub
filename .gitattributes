@@ -1,0 +1,5 @@
+* text=auto eol=lf
+*.skillpkg binary
+*.png binary
+*.jpg binary
+*.ico binary
