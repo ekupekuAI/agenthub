@@ -10,6 +10,12 @@
     "build": "node build.mjs"
   },
   "dependencies": {
+    "@agenthub/adapters": "*",
+    "@agenthub/core": "*",
+    "@agenthub/scanner": "*",
     "commander": "^15.0.0"
+  },
+  "devDependencies": {
+    "@agenthub/test-fixtures": "*"
   }
 }
