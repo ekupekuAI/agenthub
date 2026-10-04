@@ -1,0 +1,11 @@
+schema: 1
+version: 1.0.0
+requires:
+  runtimes:
+    node: ">=20"
+  commands: [npx]
+permissions:
+  network: true
+  exec: [npx, node]
+  fs:
+    write: [project, temp]

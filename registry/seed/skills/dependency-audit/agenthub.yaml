@@ -1,0 +1,11 @@
+schema: 1
+version: 1.0.0
+requires:
+  runtimes:
+    node: ">=18"
+  commands: [npm, git]
+permissions:
+  network: [registry.npmjs.org]
+  exec: [npm, git, node]
+  fs:
+    write: [project]

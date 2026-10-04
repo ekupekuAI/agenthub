@@ -1,0 +1,8 @@
+schema: 1
+version: 1.0.0
+requires:
+  commands: [npm]
+permissions:
+  exec: [npm, npx]
+  fs:
+    write: [project]

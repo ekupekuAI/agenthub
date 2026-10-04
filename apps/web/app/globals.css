@@ -1,0 +1,247 @@
+@import "tailwindcss";
+
+:root {
+  --canvas: #ffffff;
+  --surface: #f6f8fa;
+  --raised: #eef2f6;
+  --line: #d3dae2;
+  --ink: #0f172a;
+  --muted: #4a5668;
+  --accent: #0b5cad;
+  --accent-strong: #084a8c;
+  --accent-ink: #ffffff;
+  --code-bg: #f1f4f8;
+
+  --ok-fg: #14532d;
+  --ok-bg: #dcfce7;
+  --ok-line: #86efac;
+  --warn-fg: #7c2d12;
+  --warn-bg: #fef3c7;
+  --warn-line: #fcd34d;
+  --bad-fg: #7f1d1d;
+  --bad-bg: #fee2e2;
+  --bad-line: #fca5a5;
+  --info-fg: #1e3a8a;
+  --info-bg: #dbeafe;
+  --info-line: #93c5fd;
+
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --canvas: #0b0f14;
+    --surface: #111821;
+    --raised: #18212c;
+    --line: #2b3644;
+    --ink: #e6edf3;
+    --muted: #9fadbb;
+    --accent: #6cb6ff;
+    --accent-strong: #9ccdff;
+    --accent-ink: #0b0f14;
+    --code-bg: #151d27;
+
+    --ok-fg: #a7f3c0;
+    --ok-bg: #062a14;
+    --ok-line: #166534;
+    --warn-fg: #fde68a;
+    --warn-bg: #2d1d04;
+    --warn-line: #92400e;
+    --bad-fg: #fecaca;
+    --bad-bg: #3a0d0d;
+    --bad-line: #991b1b;
+    --info-fg: #bfdbfe;
+    --info-bg: #0c1f3d;
+    --info-line: #1e40af;
+
+    color-scheme: dark;
+  }
+}
+
+@theme inline {
+  --color-canvas: var(--canvas);
+  --color-surface: var(--surface);
+  --color-raised: var(--raised);
+  --color-line: var(--line);
+  --color-ink: var(--ink);
+  --color-muted: var(--muted);
+  --color-accent: var(--accent);
+  --color-accent-strong: var(--accent-strong);
+  --color-accent-ink: var(--accent-ink);
+  --color-code: var(--code-bg);
+  --color-ok-fg: var(--ok-fg);
+  --color-ok-bg: var(--ok-bg);
+  --color-ok-line: var(--ok-line);
+  --color-warn-fg: var(--warn-fg);
+  --color-warn-bg: var(--warn-bg);
+  --color-warn-line: var(--warn-line);
+  --color-bad-fg: var(--bad-fg);
+  --color-bad-bg: var(--bad-bg);
+  --color-bad-line: var(--bad-line);
+  --color-info-fg: var(--info-fg);
+  --color-info-bg: var(--info-bg);
+  --color-info-line: var(--info-line);
+  --font-sans:
+    ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono:
+    ui-monospace, "Cascadia Code", "SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace;
+}
+
+html {
+  background: var(--canvas);
+  color: var(--ink);
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  background: var(--canvas);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  line-height: 1.55;
+  text-rendering: optimizeLegibility;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  html {
+    scroll-behavior: smooth;
+  }
+}
+
+/* Unlayered rules beat Tailwind utility layers, so no !important is needed. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms;
+    animation-iteration-count: 1;
+    transition-duration: 0.01ms;
+    scroll-behavior: auto;
+  }
+}
+
+:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+a {
+  color: var(--accent);
+  text-underline-offset: 3px;
+}
+
+a:hover {
+  color: var(--accent-strong);
+}
+
+code,
+pre,
+kbd {
+  font-family: var(--font-mono);
+  font-size: 0.875em;
+}
+
+:not(pre) > code {
+  background: var(--code-bg);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0.05em 0.35em;
+  overflow-wrap: anywhere;
+}
+
+pre {
+  background: var(--code-bg);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.85rem 1rem;
+  overflow-x: auto;
+  line-height: 1.5;
+}
+
+::selection {
+  background: color-mix(in srgb, var(--accent) 30%, transparent);
+}
+
+.skip-link {
+  position: absolute;
+  left: 1rem;
+  top: -100px;
+  z-index: 50;
+  background: var(--accent);
+  color: var(--accent-ink);
+  padding: 0.5rem 0.9rem;
+  border-radius: 6px;
+  font-weight: 600;
+}
+
+.skip-link:focus {
+  top: 0.75rem;
+  color: var(--accent-ink);
+}
+
+/* Long-form prose (guidelines, README) */
+.prose-doc h2 {
+  font-size: 1.45rem;
+  font-weight: 700;
+  margin: 2.5rem 0 0.75rem;
+  letter-spacing: -0.01em;
+  scroll-margin-top: 5rem;
+}
+.prose-doc h3 {
+  font-size: 1.12rem;
+  font-weight: 650;
+  margin: 1.75rem 0 0.5rem;
+  scroll-margin-top: 5rem;
+}
+.prose-doc h4 {
+  font-size: 1rem;
+  font-weight: 650;
+  margin: 1.25rem 0 0.4rem;
+}
+.prose-doc p {
+  margin: 0.6rem 0;
+}
+.prose-doc ul,
+.prose-doc ol {
+  margin: 0.6rem 0 0.6rem 1.35rem;
+}
+.prose-doc ul {
+  list-style: disc;
+}
+.prose-doc ol {
+  list-style: decimal;
+}
+.prose-doc li {
+  margin: 0.25rem 0;
+}
+.prose-doc pre {
+  margin: 0.85rem 0;
+}
+.prose-doc blockquote {
+  border-left: 3px solid var(--line);
+  padding-left: 0.9rem;
+  color: var(--muted);
+  margin: 0.75rem 0;
+}
+.prose-doc table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0.85rem 0;
+  font-size: 0.925rem;
+}
+.prose-doc th,
+.prose-doc td {
+  border: 1px solid var(--line);
+  padding: 0.45rem 0.6rem;
+  text-align: left;
+  vertical-align: top;
+}
+.prose-doc th {
+  background: var(--surface);
+  font-weight: 600;
+}
+
+.table-wrap {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
