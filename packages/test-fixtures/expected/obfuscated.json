@@ -1,0 +1,1 @@
+{ "outcome": "block", "ruleIds": ["code.dynamic", "code.obfuscated"] }

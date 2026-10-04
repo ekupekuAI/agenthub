@@ -1,0 +1,1 @@
+{ "outcome": "block", "ruleIds": ["exec.shell", "net.access", "net.download-exec"] }
