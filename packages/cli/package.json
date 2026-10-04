@@ -1,0 +1,15 @@
+{
+  "name": "@agenthub/cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "agenthub": "./dist/agenthub.mjs"
+  },
+  "scripts": {
+    "build": "node build.mjs"
+  },
+  "dependencies": {
+    "commander": "^15.0.0"
+  }
+}
