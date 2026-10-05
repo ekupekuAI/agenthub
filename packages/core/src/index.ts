@@ -1,4 +1,5 @@
 export * from './archive';
+export * from './capabilities';
 export * from './engine';
 export * from './errors';
 export * from './hash';

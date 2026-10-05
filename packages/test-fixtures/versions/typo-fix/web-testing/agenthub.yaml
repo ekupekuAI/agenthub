@@ -1,0 +1,9 @@
+schema: 1
+version: 1.3.0
+requires:
+  runtimes: { node: ">=22" }
+permissions:
+  network: true
+  exec: [npx, node]
+  env: [PLAYWRIGHT_BROWSERS_PATH]
+channel: stable

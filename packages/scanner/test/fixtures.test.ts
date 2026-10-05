@@ -1,4 +1,11 @@
-import { fixtureNames, readExpected, readFixtureFiles } from '@agenthub/test-fixtures';
+import {
+  externalSummary,
+  fixtureNames,
+  readExpected,
+  readFixtureFiles,
+  readVersionFiles,
+  versionFixtures,
+} from '@agenthub/test-fixtures';
 import { describe, expect, it } from 'vitest';
 import { evaluatePolicy, scanPackage } from '../src/index';
 import { FIXTURE_MANIFESTS, fixtureManifest, ruleIds } from './helpers';
@@ -10,12 +17,14 @@ describe('fixture skills', () => {
     expect(names).toEqual([
       'complex-benign',
       'download-exec',
+      'externals',
       'hello-skill',
       'hidden-unicode',
       'needs-node-99',
       'obfuscated',
       'persistence',
       'prompt-injection',
+      'remote-instructions',
       'secret-reader',
       'web-testing',
     ]);
@@ -36,9 +45,24 @@ describe('fixture skills', () => {
       (f) => `${f.decision} ${f.ruleId} ${f.file}:${f.line} [${f.subject ?? ''}] ${f.evidence}`,
     );
     expect(
-      { outcome: policy.outcome, ruleIds: ruleIds(result.findings) },
+      {
+        outcome: policy.outcome,
+        ruleIds: ruleIds(result.findings),
+        externals: (result.externals ?? []).map(externalSummary),
+      },
       summary.join('\n'),
     ).toEqual(expected);
+  });
+
+  it.each(versionFixtures())('version %s/%s matches its expectation', (variant, name) => {
+    const expected = readExpected(name, variant);
+    const result = scanPackage(readVersionFiles(variant, name));
+    const policy = evaluatePolicy(result.findings, fixtureManifest(name));
+    expect({
+      outcome: policy.outcome,
+      ruleIds: ruleIds(result.findings),
+      externals: (result.externals ?? []).map(externalSummary),
+    }).toEqual(expected);
   });
 
   it('benign fixtures produce no warnings or blocks', () => {

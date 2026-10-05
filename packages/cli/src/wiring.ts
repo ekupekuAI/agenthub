@@ -41,7 +41,7 @@ import {
   createFileRegistry,
   loadConfig,
 } from '@agenthub/core';
-import { evaluatePolicy, scanPackage } from '@agenthub/scanner';
+import { evaluatePolicy, RULESET_DIGEST, scanPackage } from '@agenthub/scanner';
 import { HttpRegistry } from './http-registry';
 
 export type LoadedConfig = Awaited<ReturnType<typeof loadConfig>>;
@@ -138,6 +138,7 @@ export function createAgentPort(
 
 export function createSecurityPort(): SecurityPort {
   return {
+    rulesetDigest: RULESET_DIGEST,
     scan: (files) => scanPackage(files),
     evaluate: (findings, manifest, opts) => evaluatePolicy(findings, manifest, opts),
   };

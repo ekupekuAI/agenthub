@@ -1,5 +1,12 @@
 export * from './api';
 export {
+  approvalState,
+  approvedBaseline,
+  hasBoundApproval,
+  recordedApproval,
+  recordedSet,
+} from './approval';
+export {
   CONFIG_KEYS,
   type ConfigKey,
   configSchema,
@@ -22,8 +29,12 @@ export {
   isWithin,
   LINK_MARKER,
   mkdirp,
+  type PathKind,
+  pathKind,
+  readTreeFiles,
   removeTree,
   renameWithRetry,
+  resolvesWithin,
   retrySettings,
   WriteGuard,
 } from './fsutil';
@@ -36,7 +47,19 @@ export {
   readJournals,
   writeJournal,
 } from './journal';
-export { emptyLock, parseLock, readLock, serializeLock, sortKeysDeep, writeLock } from './lock';
+export {
+  emptyLock,
+  LOCKFILE_VERSION,
+  MAX_LOCK_EXTERNALS,
+  MAX_LOCK_TOKENS,
+  parseLock,
+  parseLockEntry,
+  peekLockVersion,
+  readLock,
+  serializeLock,
+  sortKeysDeep,
+  writeLock,
+} from './lock';
 export {
   acquireProcessLock,
   isProcessAlive,

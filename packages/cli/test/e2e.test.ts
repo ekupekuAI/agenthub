@@ -8,7 +8,7 @@ import { chmod, cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/prom
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { fixturePath } from '@agenthub/test-fixtures';
+import { fixturePath, versionFixturePath } from '@agenthub/test-fixtures';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 const repoRoot = fileURLToPath(new URL('../../../', import.meta.url));
@@ -552,6 +552,172 @@ describe('agenthub CLI (built)', () => {
       const result = cli(project, ['rollback', 'hello-skill', '--dry-run']);
       const lines = `${result.stdout}\n${result.stderr}`.split(/\r?\n/);
       expect(lines.some((line) => line.startsWith('Verified publisher'))).toBe(false);
+    });
+  });
+
+  describe('capability approvals (trust features)', () => {
+    let project: string;
+    let registry: string;
+    const env = () => ({ AGENTHUB_REGISTRY: `file:${registry}` });
+    const lockText = () => readFile(join(project, '.agenthub', 'agenthub.lock'), 'utf8');
+    const entry = async () => JSON.parse(await lockText()).skills['web-testing'];
+
+    function pack(dir: string, version: string): void {
+      const out = join(registry, `web-testing-${version}.skillpkg`);
+      const result = cli(project, ['pack', dir, '--version', version, '-o', out]);
+      expect(result.code, result.stderr).toBe(0);
+    }
+
+    beforeAll(async () => {
+      project = await newProject('trust');
+      registry = join(base, 'trust-registry');
+      await mkdir(registry, { recursive: true });
+      pack(fixturePath('web-testing'), '1.0.0');
+      pack(versionFixturePath('typo-fix', 'web-testing'), '1.0.1');
+    });
+
+    it('a fresh install records an approval in a v2 lock', async () => {
+      const result = cli(project, ['install', 'web-testing@1.0.0', '--yes', '--json'], env());
+      expect(result.code, result.stdout + result.stderr).toBe(0);
+      expect(JSON.parse(await lockText()).lockfileVersion).toBe(2);
+      const e = await entry();
+      expect(e.approval.digest).toBe(e.digest);
+      expect(e.capabilities.network).toEqual(['*']);
+      expect(e.externals.map((x: { id: string }) => x.id)).toEqual([
+        'playwright',
+        'https://playwright.dev',
+      ]);
+      const list = cli(project, ['list'], env());
+      expect(list.stdout).toContain('APPROVAL');
+      expect(list.stdout).toMatch(/web-testing.*approved/);
+    });
+
+    it('update --safe applies a non-expanding update and carries the approval', async () => {
+      const result = cli(project, ['update', '--safe'], env());
+      expect(result.code, result.stdout + result.stderr).toBe(0);
+      const e = await entry();
+      expect(e.version).toBe('1.0.1');
+      expect(e.approval.note).toMatch(/^carried forward from /);
+    });
+
+    it('an expanding update: --check marks it, --safe skips it, --yes alone exits 3 and writes nothing', async () => {
+      pack(versionFixturePath('expanding', 'web-testing'), '1.1.0');
+      const before = await lockText();
+      const skillFile = join(project, '.claude', 'skills', 'web-testing', 'SKILL.md');
+      const skillMd = await readFile(skillFile, 'utf8');
+
+      const check = cli(project, ['update', '--check', '--json'], env());
+      expect(check.code, check.stdout + check.stderr).toBe(0);
+      const candidate = check.json().data.candidates[0];
+      expect(candidate.change.expansion).toBe(true);
+      expect(candidate.change.unapproved).toContain('network:telemetry.example.invalid');
+      expect(candidate.change.unapproved).toContain('exec:uvx');
+      expect(cli(project, ['update', '--check'], env()).stdout).toMatch(/expands \(\+\d+\)/);
+
+      const safe = cli(project, ['update', '--safe'], env());
+      expect(safe.code, safe.stdout + safe.stderr).toBe(0);
+      expect(safe.stdout).toContain('capability expansion: +');
+
+      const yes = cli(project, ['update', 'web-testing', '--yes'], env());
+      expect(yes.code, yes.stdout + yes.stderr).toBe(3);
+      expect(yes.stdout).toContain('This update can do more than the version you approved.');
+      expect(yes.stdout).toContain('+ network  telemetry.example.invalid');
+      expect(yes.stdout).toContain('+ exec     uvx');
+      expect(yes.stdout).toContain(
+        'https://setup.example.invalid/web-testing/setup.md (unpinned, remote instructions)',
+      );
+      expect(yes.stderr).toContain('--approve-capabilities');
+      const json = cli(project, ['update', 'web-testing', '--yes', '--json'], env());
+      expect(json.code).toBe(3);
+      expect(json.json().error.code).toBe('APPROVAL_REQUIRED');
+      expect(await lockText()).toBe(before);
+      expect(await readFile(skillFile, 'utf8')).toBe(skillMd);
+    });
+
+    it('diff shows the capability delta and the file summary (read-only)', async () => {
+      const before = await lockText();
+      const human = cli(project, ['diff', 'web-testing'], env());
+      expect(human.code, human.stdout + human.stderr).toBe(0);
+      expect(human.stdout).toContain('web-testing 1.0.1 → 1.1.0');
+      expect(human.stdout).toContain('not a safety verdict');
+      expect(human.stdout).toContain('3 modified');
+      expect(human.stdout).toContain('Expansion:');
+      const json = cli(project, ['diff', 'web-testing', '--json'], env()).json().data;
+      expect(json.approvalRequired).toBe(true);
+      expect(json.delta.added.network).toEqual([
+        'setup.example.invalid',
+        'telemetry.example.invalid',
+      ]);
+      expect(json.files.modified).toEqual(['SKILL.md', 'agenthub.yaml', 'scripts/run.sh']);
+      expect(json.files.skillMd.delta).toBe(3);
+      const same = cli(project, ['diff', 'web-testing', '--to', '1.0.1', '--json'], env());
+      expect(same.json().data.approvalRequired).toBe(false);
+      expect(await lockText()).toBe(before);
+    });
+
+    it('--approve-capabilities applies it; rollback restores the previous approval', async () => {
+      const previous = await entry();
+      const update = cli(
+        project,
+        ['update', 'web-testing', '--yes', '--approve-capabilities', '--json'],
+        env(),
+      );
+      expect(update.code, update.stdout + update.stderr).toBe(0);
+      const updated = await entry();
+      expect(updated.version).toBe('1.1.0');
+      expect(updated.approval.digest).toBe(updated.digest);
+      expect(updated.capabilities.network).toContain('telemetry.example.invalid');
+
+      const rollback = cli(project, ['rollback', 'web-testing', '--yes'], env());
+      expect(rollback.code, rollback.stdout + rollback.stderr).toBe(0);
+      const rolled = await entry();
+      expect(rolled.version).toBe('1.0.1');
+      expect(rolled.approval).toEqual(previous.approval);
+      const verify = cli(project, ['verify'], env());
+      expect(verify.code, verify.stdout + verify.stderr).toBe(0);
+      expect(verify.stdout).toContain('approval: approved');
+    });
+
+    it('a v1 lock is read as is, and approve upgrades it to v2', async () => {
+      const other = await newProject('trust-v1');
+      expect(cli(other, ['install', fixturePath('hello-skill'), '--yes']).code).toBe(0);
+      const file = join(other, '.agenthub', 'agenthub.lock');
+      const lock = JSON.parse(await readFile(file, 'utf8'));
+      const e = lock.skills['hello-skill'];
+      for (const key of ['capabilities', 'capabilityDigest', 'rulesetDigest', 'externals']) {
+        delete e[key];
+      }
+      delete e.approval;
+      const v1 = `${JSON.stringify({ lockfileVersion: 1, skills: { 'hello-skill': e } }, null, 2)}\n`;
+      await writeFile(file, v1);
+      expect(cli(other, ['list']).stdout).toMatch(/hello-skill.*unapproved/);
+      expect(cli(other, ['doctor']).stdout).toContain('lock.v1');
+      expect(await readFile(file, 'utf8')).toBe(v1);
+      expect(cli(other, ['approve', 'hello-skill']).code).toBe(2);
+      const approve = cli(other, [
+        'approve',
+        'hello-skill',
+        '--yes',
+        '--note',
+        'migrated',
+        '--json',
+      ]);
+      expect(approve.code, approve.stdout + approve.stderr).toBe(0);
+      const after = JSON.parse(await readFile(file, 'utf8'));
+      expect(after.lockfileVersion).toBe(2);
+      expect(after.skills['hello-skill'].approval.note).toBe('migrated');
+    });
+
+    it('refuses a lock written by a newer agenthub without touching it', async () => {
+      const other = await newProject('trust-v3');
+      await mkdir(join(other, '.agenthub'), { recursive: true });
+      const file = join(other, '.agenthub', 'agenthub.lock');
+      const text = '{ "lockfileVersion": 3, "skills": {} }';
+      await writeFile(file, text);
+      const result = cli(other, ['install', '--yes', '--json']);
+      expect(result.code).toBe(1);
+      expect(result.json().error.details.code).toBe('LOCK_TOO_NEW');
+      expect(await readFile(file, 'utf8')).toBe(text);
     });
   });
 });

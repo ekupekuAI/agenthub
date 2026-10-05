@@ -8,6 +8,8 @@ import {
   fixturePath,
   readExpected,
   readFixtureFiles,
+  readVersionFiles,
+  versionFixtures,
 } from '../src/index';
 
 const decoder = new TextDecoder();
@@ -28,7 +30,7 @@ describe('fixture skills', () => {
   it('lives in an absolute fixtures folder', () => {
     expect(isAbsolute(FIXTURES_DIR)).toBe(true);
     expect(existsSync(FIXTURES_DIR)).toBe(true);
-    expect(names.length).toBe(10);
+    expect(names.length).toBe(12);
   });
 
   it.each(names)('%s has a SKILL.md whose name equals the folder and a description', (name) => {
@@ -42,10 +44,23 @@ describe('fixture skills', () => {
     const expected = readExpected(name);
     expect(['allow', 'confirm', 'block']).toContain(expected.outcome);
     expect(expected.ruleIds).toEqual([...new Set(expected.ruleIds)].sort());
+    expect(expected.externals).toEqual([...new Set(expected.externals)].sort());
   });
 
+  it.each(versionFixtures())(
+    'version fixture %s/%s keeps the name and has an expectation',
+    (variant, name) => {
+      expect(names).toContain(name);
+      expect(readVersionFiles(variant, name).some((f) => f.path === 'SKILL.md')).toBe(true);
+      expect(['allow', 'confirm', 'block']).toContain(readExpected(name, variant).outcome);
+    },
+  );
+
   it('keeps expectations outside the skill folders, one per fixture', () => {
-    const files = readdirSync(EXPECTED_DIR).sort();
+    const files = readdirSync(EXPECTED_DIR, { withFileTypes: true })
+      .filter((entry) => entry.isFile())
+      .map((entry) => entry.name)
+      .sort();
     expect(files).toEqual(names.map((n) => `${n}.json`));
     for (const name of names) {
       expect(
@@ -82,9 +97,16 @@ describe('fixture skills', () => {
   });
 
   it('keeps payloads inert: only reserved .invalid hosts in scripts', () => {
-    for (const name of names) {
-      for (const f of readFixtureFiles(name)) {
-        if (!/\.(?:sh|mjs|js|py|md)$/.test(f.path)) continue;
+    const all = [
+      ...names.map((name) => ({ name, files: readFixtureFiles(name) })),
+      ...versionFixtures().map(([variant, name]) => ({
+        name: `${variant}/${name}`,
+        files: readVersionFiles(variant, name),
+      })),
+    ];
+    for (const { name, files } of all) {
+      for (const f of files) {
+        if (!/\.(?:sh|mjs|js|py|md|json)$/.test(f.path)) continue;
         const hosts = [...decoder.decode(f.content).matchAll(/https?:\/\/([^/\s'")]+)/g)].map(
           (m) => m[1],
         );

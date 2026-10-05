@@ -30,6 +30,43 @@ The plan names the rule, file and line. If you wrote the skill, fix the behavior
 the permission in `agenthub.yaml`. Some behaviors are blocked even when declared; see the
 [security model](security.md).
 
+## "can do more than the version you approved" (exit code 3)
+
+The update adds capabilities (a host, a program, an external reference or a looser pin) that
+your approval does not cover, and nothing was changed. Review the change with
+`agenthub diff <skill>`, then either answer `y` at the prompt or re-run with
+`--yes --approve-capabilities`. `--yes` alone never approves new capabilities, and
+`update --safe` skips such updates by design.
+
+If the plan says the installed version has **no capability approval**, its lockfile entry was
+written by an older agenthub or its approval was removed: run `agenthub approve <skill>`
+after reviewing what it can do.
+
+## "approval stale" or "approved under other scanner rules"
+
+agenthub's scanner rules changed and now see something the recorded approval did not cover
+(`verify` lists it). The skill's files did not change. Review the new items and run
+`agenthub approve <skill>`. Restoring and reinstalling the same version is not blocked.
+
+## "the lock's capability record does not match the installed files" (exit code 4)
+
+Someone edited the capability block in `.agenthub/agenthub.lock` (or a merge combined two
+versions of it). If the error says `LOCK_INCONSISTENT`, the block does not even match its own
+digest: take one side of the merge. Then run `agenthub approve <skill>` to record what the
+installed files really do.
+
+## "written by a newer agenthub" (LOCK_TOO_NEW)
+
+The lockfile uses a format this agenthub does not know. Upgrade agenthub; the file is not
+changed. Version 2 lockfiles (capability approvals) cannot be read by agenthub releases from
+before this feature, so upgrade the whole team together. A version 1 lockfile is read as is
+and upgraded the next time a command changes it; `doctor` reports `lock.v1` until then.
+
+## "quarantined in the lock"
+
+The lockfile entry carries a `quarantine` field. Install, update, restore and approve refuse
+that skill until the entry is reviewed and removed (`agenthub remove <skill>`).
+
 ## "incompatible" (exit code 5)
 
 The skill requires a runtime or command you don't have, or doesn't support any of your

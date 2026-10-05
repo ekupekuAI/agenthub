@@ -8,3 +8,5 @@ coverage/
 .env.*
 !.env.example
 .agenthub/tmp/
+test-results/
+playwright-report/

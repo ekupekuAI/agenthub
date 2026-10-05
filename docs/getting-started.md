@@ -90,18 +90,52 @@ agenthub verify
 ```
 
 `verify` re-hashes every installed file and compares it with the lockfile. It exits with
-code 4 if a file was changed, added or removed.
+code 4 if a file was changed, added or removed. It also rescans each skill and prints its
+approval state; `list` shows an `APPROVAL` column read from the lockfile.
+
+To approve the installed version's inventory yourself (for example after upgrading agenthub
+or after a teammate's lockfile change):
+
+```bash
+agenthub approve web-testing --note "reviewed in PR 12"
+```
 
 ## 6. Update safely
 
 ```bash
-agenthub update --check          # what is available; changes nothing
+agenthub update --check          # what is available, and whether it can do more; changes nothing
+agenthub diff web-testing        # capability and file changes of the next version; changes nothing
 agenthub update web-testing      # show the plan, confirm, update
-agenthub update --safe           # update everything that passes every check
+agenthub update --safe           # apply only updates that need no new approval
 ```
 
-`--safe` skips any update that is incompatible, revoked, has findings that need a decision,
-or would overwrite local edits.
+When you install a skill, agenthub records its **capability inventory** in the lockfile:
+the programs it runs, the hosts it contacts, the environment variables and secrets it reads,
+and its outbound references (URLs, git repositories, npm/PyPI/crates packages, MCP servers,
+each marked pinned or unpinned). Confirming the install approves that inventory.
+
+An update whose inventory goes beyond what you approved — a new host, a new program, a new
+or loosened external reference — is refused until you approve it:
+
+```text
+Capabilities  web-testing 1.0.0 → 1.1.0
+  + exec     uvx
+  + network  telemetry.example.invalid
+  + external https://setup.example.invalid/setup.md (unpinned, remote instructions)
+This update can do more than the version you approved.
+```
+
+- At a terminal you are asked `Approve 3 new capabilities and update …? [y/N]` (default No).
+- `--yes` alone never approves new capabilities: it exits with code 3 and changes nothing.
+  Review with `agenthub diff <skill>`, then re-run with `--yes --approve-capabilities`.
+- `--safe` applies an update only when it adds no capability, the current approval still
+  holds, and the policy outcome is no worse than the installed version's.
+
+The inventory comes from static analysis. It is not a safety verdict, and a change that only
+rewords the instructions in SKILL.md cannot show up in it: the plan and `diff` print the
+SKILL.md line change so you can read it.
+
+`--safe` also skips any update that is incompatible, revoked or would overwrite local edits.
 
 Every update keeps a snapshot of the version it replaced. If the new version fails
 validation, the previous one is restored automatically.
@@ -130,11 +164,14 @@ Only files agenthub installed are removed. Files you added or changed are kept a
 | `install [target]` | Install a skill; with no target, restore everything in the lockfile |
 | `list` | Installed skills and their status |
 | `verify [skill]` | Compare installed files with the lockfile |
-| `update --check` / `update <skill>` / `update --safe` | Check for and apply updates |
+| `update --check` / `update <skill>` / `update --safe` | Check for and apply updates (`--approve-capabilities` to approve new capabilities) |
+| `diff <skill> [--to <version>]` | Capability and file changes against a registry version (read-only) |
+| `approve <skill> [--note <text>]` | Approve the installed version's capability inventory |
 | `rollback <skill>` | Restore the previous snapshot |
 | `remove <skill>` | Remove an installed skill |
 | `pack <dir>` | Build a `.skillpkg` from a skill folder |
 | `config [get\|set\|unset]` | Show or change settings |
 
-Exit codes: `0` ok · `1` error or problems found · `2` usage · `3` blocked by policy ·
+Exit codes: `0` ok · `1` error or problems found · `2` usage · `3` blocked by policy or new
+capabilities need approval ·
 `4` integrity or drift · `5` incompatible · `130` cancelled.

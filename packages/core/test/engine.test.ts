@@ -308,7 +308,7 @@ describe('install from a folder', () => {
     const lock = JSON.parse(text) as LockFile;
     expect(text).toBe(serializeLock(lock));
     expect(text.endsWith('}\n')).toBe(true);
-    expect(text.startsWith('{\n  "lockfileVersion": 1,\n  "skills"')).toBe(true);
+    expect(text.startsWith('{\n  "lockfileVersion": 2,\n  "skills"')).toBe(true);
     const entry = lock.skills['hello-skill'] as LockEntry;
     expect(Object.keys(entry)).toEqual([...Object.keys(entry)].sort());
     expect(entry).toMatchObject({
@@ -1182,7 +1182,7 @@ describe('write guard', () => {
 
   it('rejects an invalid lock file with VALIDATION naming the file', async () => {
     await mkdir(join(env.project, '.agenthub'), { recursive: true });
-    await writeFile(projectLock(), '{ "lockfileVersion": 2, "skills": {} }');
+    await writeFile(projectLock(), '{ "lockfileVersion": 0, "skills": {} }');
     const error = await catchAsync(() => env.engine.list('project'));
     expect(error.code).toBe('VALIDATION');
     expect(error.message).toContain('agenthub.lock');

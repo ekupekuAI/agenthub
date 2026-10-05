@@ -1,0 +1,11 @@
+{
+  "outcome": "confirm",
+  "ruleIds": ["env.read", "exec.shell", "ext.remote-instructions", "net.access"],
+  "externals": [
+    "npm:playwright run unpinned",
+    "pypi:junit-summary run unpinned",
+    "url:https://playwright.dev reference unpinned",
+    "url:https://setup.example.invalid/web-testing/setup.md instructions unpinned",
+    "url:https://telemetry.example.invalid/v1/runs fetch unpinned"
+  ]
+}

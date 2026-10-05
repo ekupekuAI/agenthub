@@ -1,4 +1,5 @@
 import type { SkillInfo, SkillInfoVersion } from '@agenthub/core';
+import { INVENTORY_CAPTION, inventoryLines } from '../capability-format';
 import type { CommandContext, CommandResult } from '../context';
 import { agentList, formatBytes, formatFinding, shortDigest, table } from '../format';
 import { clean } from '../output';
@@ -41,6 +42,18 @@ export async function infoCommand(ctx: CommandContext, name: string): Promise<Co
   }
   if (info.category) ctx.out.print(`  category  ${clean(info.category)}`);
   ctx.out.print(`  registry  ${clean(registry.id)}`);
+  const installed = (await (await ctx.engine()).list().catch(() => [])).filter(
+    (skill) => skill.name === name,
+  );
+  for (const skill of installed) {
+    const approval =
+      skill.approval === 'approved'
+        ? `approved${skill.approvedAt ? ` on ${clean(skill.approvedAt)}` : ''}${skill.approvedBy ? ` by ${clean(skill.approvedBy)}` : ''}`
+        : skill.approval === 'recheck'
+          ? 'approved under other scanner rules (run "agenthub verify")'
+          : `not approved (review with "agenthub approve ${clean(name)}")`;
+    ctx.out.print(`  installed ${clean(skill.version)} (${skill.scope}) — ${approval}`);
+  }
   ctx.out.print();
 
   ctx.out.print(s.bold('Versions'));
@@ -72,6 +85,24 @@ export async function infoCommand(ctx: CommandContext, name: string): Promise<Co
     ctx.out.print();
     ctx.out.print(s.bold('Permissions'));
     ctx.out.lines(permissionLines(latest));
+    if (latest.capabilities !== undefined) {
+      ctx.out.print();
+      ctx.out.print(
+        `${s.bold('What this version can do')}  ${s.dim(`(${INVENTORY_CAPTION}; reported by the registry, recomputed locally at install)`)}`,
+      );
+      ctx.out.lines(
+        inventoryLines(
+          {
+            set: latest.capabilities.set,
+            digest: latest.capabilities.digest,
+            rulesetDigest: latest.capabilities.rulesetDigest,
+            undeclared: latest.capabilities.undeclared,
+            unobserved: latest.capabilities.unobserved,
+          },
+          s,
+        ),
+      );
+    }
     ctx.out.print();
     ctx.out.print(s.bold('Requirements'));
     if (!latest.requirements?.length) ctx.out.print('  none declared');

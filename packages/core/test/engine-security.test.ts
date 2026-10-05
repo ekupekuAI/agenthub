@@ -384,7 +384,7 @@ describe('project config cannot redirect the registry', () => {
     const pkgDir = await makeSkill('web-testing', { version: '99.0.0', body: '# 99.0.0\n' });
     const pkg = await loadSkillFromDir(pkgDir);
     const lock: LockFile = {
-      lockfileVersion: 1,
+      lockfileVersion: 2,
       skills: {
         'web-testing': {
           version: '99.0.0',

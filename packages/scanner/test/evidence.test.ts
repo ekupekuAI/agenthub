@@ -5,6 +5,7 @@ import {
   escapeInvisible,
   isBinaryContent,
   makeEvidence,
+  RULESET_DIGEST,
   SCANNER_VERSION,
   scanPackage,
 } from '../src/index';
@@ -79,9 +80,12 @@ describe('scanPackage', () => {
   it('reports the scanner version and nothing for a plain skill', () => {
     expect(scanPackage([file('SKILL.md', '---\nname: a\ndescription: b\n---\nHello.\n')])).toEqual({
       scannerVersion: SCANNER_VERSION,
+      rulesetDigest: RULESET_DIGEST,
       findings: [],
+      externals: [],
     });
-    expect(SCANNER_VERSION).toBe('1.0.0');
+    expect(SCANNER_VERSION).toBe('1.1.0');
+    expect(RULESET_DIGEST).toMatch(/^sha256:[0-9a-f]{64}$/);
   });
 
   it('returns findings sorted by file, line and rule, each with the full shape', () => {

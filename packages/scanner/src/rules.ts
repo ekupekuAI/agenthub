@@ -2,7 +2,10 @@ import type { FindingCategory } from '@agenthub/core';
 
 export interface RuleInfo {
   category: FindingCategory;
-  /** Default severity. `code.dynamic` is raised to high per file (see scan.ts). */
+  /**
+   * Default severity. `code.dynamic` is raised to high per file (see context.ts) and
+   * `ext.remote-instructions` lowered to medium when the URL is pinned (see externals.ts).
+   */
   severity: 'medium' | 'high';
   /** False when the behavior can never be declared away (design §8.2). */
   declarable: boolean;
@@ -82,6 +85,13 @@ export const RULES = {
     severity: 'medium',
     declarable: true,
     title: 'Unexpected binary file',
+  },
+  /** Prose that tells the agent to fetch and follow remote text; lowered to medium when pinned. */
+  'ext.remote-instructions': {
+    category: 'remote-instructions',
+    severity: 'high',
+    declarable: true,
+    title: 'Follows instructions fetched from a URL',
   },
 } as const satisfies Record<string, RuleInfo>;
 

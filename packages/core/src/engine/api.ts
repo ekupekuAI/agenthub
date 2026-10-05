@@ -6,8 +6,13 @@ import type {
   AgentEnvironment,
   AgentHubConfig,
   AgentId,
+  CapabilityDelta,
+  CapabilityReport,
+  CapabilitySet,
   EvaluatedFinding,
+  FileChangeSummary,
   Finding,
+  LockApproval,
   LockEntry,
   PolicyResult,
   ScanResult,
@@ -16,6 +21,9 @@ import type {
   TargetFolder,
   ValidationIssue,
 } from '../types';
+import type { ApprovalState } from './approval';
+
+export type { ApprovalState, ApprovalStatus } from './approval';
 
 // ---------------------------------------------------------------------------
 // Ports (injected by the CLI)
@@ -39,6 +47,11 @@ export interface AgentPort {
 }
 
 export interface SecurityPort {
+  /**
+   * Identity of the scanner rules ('sha256:<hex>'), the same value scan() reports. Optional:
+   * when absent the engine asks scan([]) and, failing that, derives one from scannerVersion.
+   */
+  readonly rulesetDigest?: string;
   scan(files: { path: string; content: Uint8Array; kind?: 'text' | 'binary' }[]): ScanResult;
   evaluate(
     findings: Finding[],
@@ -77,7 +90,33 @@ export interface SearchResult {
   updatedAt?: string;
 }
 
+/**
+ * Capabilities as reported by a registry for one version (trust features §10.4). Display only:
+ * every gate uses the report computed locally from verified bytes.
+ */
+export interface VersionCapabilities {
+  set: CapabilitySet;
+  digest: string;
+  rulesetDigest: string;
+  undeclared: string[];
+  unobserved: string[];
+}
+
+/** A registry's capability diff between two stored versions (GET /skills/:slug/diff). */
+export interface VersionDiff {
+  slug: string;
+  from: { version: string; digest: string };
+  to: { version: string; digest: string };
+  /** False when the two versions were analyzed under different rulesets. */
+  comparable: boolean;
+  delta: CapabilityDelta | null;
+  files: FileChangeSummary;
+}
+
 export interface SkillInfoVersion extends RegistryVersion {
+  /** Reported by the registry; recomputed locally at install. */
+  capabilities?: VersionCapabilities;
+  skillMdLines?: number;
   sizeBytes?: number;
   requirements?: {
     kind: 'runtime' | 'command' | 'mcp';
@@ -161,6 +200,44 @@ export interface RequirementCheck {
   ok: boolean | null;
 }
 
+/** Who approved and why (all optional; the approval itself is the confirmed plan). */
+export interface ApprovalInput {
+  /** Self-asserted approver (AGENTHUB_APPROVED_BY). */
+  by?: string;
+  note?: string;
+  /** How the approval was given; written to the audit log, never to the lock. */
+  mode?: 'prompt' | 'yes' | 'flag' | 'command';
+}
+
+/**
+ * The capability view of a plan (trust features §4). `candidate` is computed from the package
+ * the plan applies; the baseline from the installed entry (intact copy or cache, never the
+ * registry).
+ */
+export interface PlanCapabilities {
+  rulesetDigest: string;
+  candidate: CapabilityReport;
+  /**
+   * State of the installed entry: 'fresh' = nothing installed; 'same-digest' = the plan carries
+   * the installed entry (restore, re-target); 'unavailable' = no intact copy or cache to rescan.
+   */
+  state: ApprovalState | 'fresh' | 'same-digest' | 'unavailable';
+  /** Tokens the current ruleset sees that the existing approval does not cover. */
+  stale: string[];
+  /** Candidate vs. the installed version's current set ("what changes on disk"); null = fresh. */
+  delta: CapabilityDelta | null;
+  /** Candidate vs. the approved baseline; its `expansion` is the gate. */
+  unapproved: CapabilityDelta;
+  /** True when applying needs an explicit capability approval (an expansion on a replace). */
+  approvalRequired: boolean;
+  /** False when the strict policy outcome is block: no approval is ever written. */
+  approvable: boolean;
+  /** Strict policy outcome of the installed version (for `update --safe`); null when unknown. */
+  previousOutcome: PolicyResult['outcome'] | null;
+  /** File-level changes against the installed version (display only); null for a fresh install. */
+  files: FileChangeSummary | null;
+}
+
 export interface InstallPlan {
   id: string;
   skill: { name: string; version: string; digest: string; archiveDigest?: string };
@@ -181,6 +258,8 @@ export interface InstallPlan {
   }[];
   /** True when the user must confirm (any WARN finding, or replacing an installed version). */
   needsConfirmation: boolean;
+  /** Capability inventory, delta and gate. Absent on plans that can never be applied. */
+  capabilities?: PlanCapabilities;
   hints: string[];
   previous?: LockEntry;
   dev: boolean;
@@ -216,6 +295,19 @@ export interface VerifyReport {
   digest: string;
   ok: boolean;
   targets: { lockPath: string; ok: boolean; files: VerifyFileStatus[] }[];
+  /**
+   * Approval state from a rescan of the installed bytes (verify only). `lockMatches: false`
+   * means the lock's capability record does not describe the bytes (exit 4).
+   */
+  capabilities?: {
+    state: ApprovalState;
+    stale: string[];
+    lockMatches: boolean | null;
+    /** False when there was no intact copy or cache entry to rescan. */
+    checked: boolean;
+    /** True for an entry without a capability block (written by an older agenthub). */
+    missingBlock: boolean;
+  };
 }
 
 export interface ListedSkill {
@@ -227,6 +319,44 @@ export interface ListedSkill {
   registry: string | null;
   status: 'ok' | 'drift' | 'missing';
   installedAt: string;
+  /** From the lock alone (no rescan): 'recheck' = approved under another scanner ruleset. */
+  approval: 'approved' | 'unapproved' | 'recheck';
+  capabilityDigest?: string;
+  approvedAt?: string;
+  approvedBy?: string;
+}
+
+/** Result of Engine.approve(). */
+export interface ApproveResult {
+  name: string;
+  scope: Scope;
+  version: string;
+  approval: LockApproval;
+  /** State before this approval. */
+  previousState: ApprovalState;
+  /** What was not approved before ('key:token', 'external:kind:id'). */
+  newlyApproved: string[];
+  report: CapabilityReport;
+  dryRun: boolean;
+}
+
+/** `agenthub diff`: the installed entry against a registry version (trust features §6.1). */
+export interface SkillDiff {
+  name: string;
+  scope: Scope;
+  from: { version: string; digest: string; capabilityDigest: string | null };
+  to: { version: string; digest: string; capabilityDigest: string };
+  rulesetDigest: string;
+  /** Approval state of the installed entry, or 'unavailable' without an intact copy or cache. */
+  baseline: ApprovalState | 'unavailable';
+  /** Candidate vs. the installed version's current set (vs. its record when unavailable). */
+  delta: CapabilityDelta;
+  /** What would need approval: candidate vs. the approved baseline. */
+  unapproved: string[];
+  approvalRequired: boolean;
+  /** Candidate inventory and mismatch lists. */
+  candidate: CapabilityReport;
+  files: FileChangeSummary;
 }
 
 export interface UpdateCandidate {
@@ -248,6 +378,18 @@ export interface UpdateCandidate {
     /** The registry's copy of the installed version has different contents than the lock. */
     | 'digest-mismatch';
   reason?: string;
+  /**
+   * Capability change of the available version against the approved baseline (filled by
+   * checkUpdates with `capabilities: true`, status 'available' only).
+   */
+  change?: {
+    expansion: boolean;
+    /** What would need approval, as 'key:token' / 'external:kind:id'. */
+    unapproved: string[];
+    /** Tokens the installed version had that the candidate drops. */
+    removed: number;
+    state: PlanCapabilities['state'];
+  };
 }
 
 /** Options of restore() / planRestore() (`agenthub install` with no argument). */
@@ -318,8 +460,31 @@ export interface Engine {
   /** Throws AgentHubError('USAGE') for project scope outside a project. */
   scopeRoot(scope: Scope): string;
   plan(req: InstallRequest): Promise<InstallPlan>;
-  /** Refuses (throws) when plan.blockers is non-empty. */
-  apply(plan: InstallPlan): Promise<InstallResult>;
+  /**
+   * Refuses (throws) when plan.blockers is non-empty. Recomputes the capability gate from the
+   * lock as read here: a replace whose candidate expands beyond the approved baseline throws
+   * APPROVAL_REQUIRED unless `opts.approve` is given. A fresh install records the approval
+   * (the confirmed plan is the approval); an update without expansion carries it forward.
+   */
+  apply(plan: InstallPlan, opts?: { approve?: ApprovalInput }): Promise<InstallResult>;
+  /**
+   * Approve the installed digest's capability set under the current ruleset. The installed
+   * bytes must verify (DRIFT otherwise); refused (POLICY_BLOCKED) when the strict outcome is
+   * block or the entry is quarantined. Writes only the lock and the audit log; with
+   * `dryRun` it writes nothing and returns what would be approved.
+   */
+  approve(
+    name: string,
+    scope: Scope,
+    input?: ApprovalInput,
+    opts?: { dryRun?: boolean },
+  ): Promise<ApproveResult>;
+  /** Capability and file diff of the installed entry against a registry version (read-only). */
+  diff(
+    name: string,
+    scope: Scope,
+    opts?: { to?: string; channel?: 'stable' | 'beta' },
+  ): Promise<SkillDiff>;
   /**
    * `agenthub install` with no argument: reinstall/verify every lock entry of the scope. Every
    * entry is planned first; any blocker aborts before anything is written, and plans that need
@@ -339,10 +504,14 @@ export interface Engine {
   ): Promise<RemoveResult>;
   verify(scope: Scope, name?: string): Promise<VerifyReport[]>;
   list(scope?: Scope): Promise<ListedSkill[]>;
+  /**
+   * Read-only. With `capabilities: true`, each available candidate is downloaded and verified
+   * in memory and `change` reports whether it expands beyond the approved baseline.
+   */
   checkUpdates(
     scope: Scope,
     names?: string[],
-    opts?: { channel?: 'stable' | 'beta' },
+    opts?: { channel?: 'stable' | 'beta'; capabilities?: boolean },
   ): Promise<UpdateCandidate[]>;
   /** Plan an update to the highest compatible version; null when already up to date. */
   planUpdate(

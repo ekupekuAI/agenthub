@@ -1,1 +1,5 @@
-{ "outcome": "allow", "ruleIds": ["env.read", "exec.shell"] }
+{
+  "outcome": "allow",
+  "ruleIds": ["env.read", "exec.shell"],
+  "externals": ["url:https://example.invalid reference unpinned"]
+}

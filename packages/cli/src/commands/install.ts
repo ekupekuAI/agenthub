@@ -6,9 +6,15 @@ import { classifyTarget, shadowedLocalPath } from '../target';
 import { runPlan } from './plan-flow';
 import { restoreCommand } from './restore';
 
+export interface InstallOptions {
+  /** --approve-capabilities: approve capabilities beyond the approved baseline (replace only). */
+  approveCapabilities?: boolean;
+}
+
 export async function installCommand(
   ctx: CommandContext,
   target: string | undefined,
+  opts: InstallOptions = {},
 ): Promise<CommandResult> {
   if (target === undefined) return restoreCommand(ctx);
   const engine = await ctx.engine();
@@ -51,6 +57,7 @@ export async function installCommand(
   const flow = await runPlan(ctx, plan, {
     question: `Install ${plan.skill.name} ${plan.skill.version}?`,
     done: 'Installed',
+    approveCapabilities: opts.approveCapabilities === true,
   });
   return { data: { dryRun: flow.dryRun, plan: flow.plan, result: flow.result } };
 }

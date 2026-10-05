@@ -106,7 +106,7 @@ const COMMON_COMMANDS = new Set([
 ]);
 
 /** An untagged block counts as commands when most of its lines start with a known command. */
-function looksLikeCommands(lines: readonly CodeLine[]): boolean {
+export function looksLikeCommands(lines: readonly CodeLine[]): boolean {
   const words = lines
     .map((l) => l.text.trim())
     .filter((t) => t !== '' && !t.startsWith('#'))

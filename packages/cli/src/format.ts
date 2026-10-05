@@ -6,6 +6,7 @@
 import { readersOf } from '@agenthub/adapters';
 import type { AgentId, EvaluatedFinding, InstallPlan, InstallResult, Scope } from '@agenthub/core';
 import { AGENT_IDS } from '@agenthub/core';
+import { planCapabilityLines } from './capability-format';
 import { clean, type Style } from './output';
 
 export function shortDigest(digest: string | undefined): string {
@@ -153,6 +154,18 @@ export function formatPlan(
     lines.push('  no findings (the scanner reports what it finds; it does not certify safety)');
   } else {
     for (const finding of plan.policy.findings) lines.push(formatFinding(finding, style));
+  }
+
+  if (plan.capabilities !== undefined) {
+    lines.push('');
+    lines.push(
+      ...planCapabilityLines(plan.capabilities, style, {
+        name: skill.name,
+        version: skill.version,
+        ...(plan.previous === undefined ? {} : { previousVersion: plan.previous.version }),
+        sameDigest: plan.previous?.digest === skill.digest,
+      }),
+    );
   }
 
   if (plan.requirements.length > 0) {

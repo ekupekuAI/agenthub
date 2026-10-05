@@ -108,7 +108,8 @@ export type FindingCategory =
   | 'deps'
   | 'prompt'
   | 'hidden'
-  | 'binary';
+  | 'binary'
+  | 'remote-instructions';
 
 export interface Finding {
   ruleId: string;
@@ -129,6 +130,102 @@ export interface Finding {
 export interface ScanResult {
   scannerVersion: string;
   findings: Finding[];
+  /**
+   * Identity of the rules that produced this result ('sha256:<hex>'). A capability approval is
+   * bound to it. Optional for older producers: the engine then derives one from scannerVersion.
+   */
+  rulesetDigest?: string;
+  /** Outbound references found in the files (sorted, merged). Absent = none reported. */
+  externals?: ExternalRef[];
+}
+
+// ---------------------------------------------------------------------------
+// Capabilities (trust features design §1)
+// ---------------------------------------------------------------------------
+
+/** Keys of a capability set, in canonical (sorted) order. */
+export const CAPABILITY_KEYS = [
+  'binaries',
+  'dynamic',
+  'env',
+  'exec',
+  'fsWrite',
+  'installers',
+  'markers',
+  'network',
+  'prompt',
+  'secrets',
+] as const;
+export type CapabilityKey = (typeof CAPABILITY_KEYS)[number];
+
+export const EXTERNAL_KINDS = ['url', 'git', 'npm', 'pypi', 'crates', 'mcp'] as const;
+export type ExternalKind = (typeof EXTERNAL_KINDS)[number];
+export const EXTERNAL_PINS = ['sha256', 'commit', 'version', 'unpinned'] as const;
+export type ExternalPin = (typeof EXTERNAL_PINS)[number];
+export const EXTERNAL_ROLES = ['reference', 'fetch', 'install', 'run', 'instructions'] as const;
+export type ExternalRole = (typeof EXTERNAL_ROLES)[number];
+
+/** Something outside the package that the skill points at, fetches, installs or runs. */
+export interface ExternalRef {
+  kind: ExternalKind;
+  /** Canonical id: a normalized URL, 'host/owner/repo' for git, or a package name. */
+  id: string;
+  /** url, git and mcp only; '*' when the host is templated. */
+  host?: string;
+  /** How firmly the reference names fixed content. */
+  pin: ExternalPin;
+  /** Hash, 40-hex commit, exact version, or the mutable ref (branch, tag, range); else null. */
+  pinValue: string | null;
+  role: ExternalRole;
+}
+
+/** Sorted, unique string tokens per capability key. */
+export type CapabilityTokens = Record<CapabilityKey, string[]>;
+
+/** What a version can do: observed and declared tokens per key, plus its externals. */
+export interface CapabilitySet extends CapabilityTokens {
+  externals: ExternalRef[];
+}
+
+export interface CapabilityReport {
+  set: CapabilitySet;
+  /** capabilityDigest: 'sha256:<hex>' of the canonical set. */
+  digest: string;
+  rulesetDigest: string;
+  /** 'key:token' observed but not covered by the manifest. Not part of the digest. */
+  undeclared: string[];
+  /** 'key:token' declared, with no finding it covers. Not part of the digest. */
+  unobserved: string[];
+}
+
+export interface ExternalChange {
+  change: 'pin-changed' | 'pin-loosened' | 'role-escalated';
+  from: ExternalRef;
+  to: ExternalRef;
+}
+
+export interface CapabilityDelta {
+  added: CapabilityTokens;
+  removed: CapabilityTokens;
+  externals: {
+    added: ExternalRef[];
+    removed: ExternalRef[];
+    changed: ExternalChange[];
+    tightened: { from: ExternalRef; to: ExternalRef }[];
+  };
+  /** True when the candidate can do anything the baseline could not (design §2). */
+  expansion: boolean;
+  /** Sorted display tokens, e.g. '+network:x.example', '~npm:tool 1.2.3 → ^1 (pin loosened)'. */
+  reasons: string[];
+}
+
+export interface FileChangeSummary {
+  added: string[];
+  removed: string[];
+  modified: string[];
+  unchanged: number;
+  /** SKILL.md line counts (LF-normalized); before is null when unknown. */
+  skillMd: { before: number | null; after: number; delta: number | null };
 }
 
 export type FindingDecision = 'INFO' | 'WARN' | 'BLOCK';
@@ -212,6 +309,17 @@ export interface TargetFolder {
 // Lock and config
 // ---------------------------------------------------------------------------
 
+/** A recorded human decision: these capabilities of this digest, under this ruleset. */
+export interface LockApproval {
+  digest: string;
+  capabilityDigest: string;
+  rulesetDigest: string;
+  approvedAt: string;
+  /** Self-asserted (AGENTHUB_APPROVED_BY); the evidence is the commit that changes the lock. */
+  approvedBy?: string;
+  note?: string;
+}
+
 export interface LockEntry {
   version: string;
   digest: string;
@@ -223,10 +331,25 @@ export interface LockEntry {
   /** Relative file path inside the skill -> 'sha256:<hex>'. */
   files: Record<string, string>;
   installedAt: string;
+  /**
+   * Capability block (lock v2). All four are present or all absent; absent = an entry carried
+   * over from a v1 lock that no command has touched since.
+   */
+  capabilities?: CapabilityTokens;
+  capabilityDigest?: string;
+  rulesetDigest?: string;
+  externals?: ExternalRef[];
+  /** Present only when a person approved this digest's capability set. */
+  approval?: LockApproval;
+  /** Reserved: round-tripped verbatim, never written by this release. Blocks digest changes. */
+  signer?: Record<string, string>;
+  /** Reserved: round-tripped verbatim. Present ⇒ install, update and restore are blocked. */
+  quarantine?: Record<string, string>;
 }
 
+/** In memory every lock is v2; a v1 file is upgraded on the next write. */
 export interface LockFile {
-  lockfileVersion: 1;
+  lockfileVersion: 2;
   skills: Record<string, LockEntry>;
 }
 

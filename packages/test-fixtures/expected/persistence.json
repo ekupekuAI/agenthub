@@ -1,1 +1,5 @@
-{ "outcome": "block", "ruleIds": ["fs.persistence"] }
+{
+  "outcome": "block",
+  "ruleIds": ["fs.persistence"],
+  "externals": []
+}

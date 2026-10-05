@@ -1,12 +1,33 @@
 /**
  * Shared plan → (dry run | blocked | confirm) → apply flow for install and update.
  */
-import type { InstallPlan, InstallResult } from '@agenthub/core';
-import { AgentHubError, type ErrorCode } from '@agenthub/core';
+import type { ApprovalInput, InstallPlan, InstallResult } from '@agenthub/core';
+import { AgentHubError, type ErrorCode, expansionTokens } from '@agenthub/core';
+import { expansionCount } from '../capability-format';
 import type { CommandContext } from '../context';
 import { formatInstalled, formatPlan } from '../format';
-import { confirmPlan } from '../prompt';
+import { clean } from '../output';
+import { canPrompt, confirm, confirmPlan } from '../prompt';
 import { resolvePaths } from '../wiring';
+
+/** AGENTHUB_APPROVED_BY, cleaned to what the lock accepts (self-asserted, may be absent). */
+export function approvedBy(env: Record<string, string | undefined>): string | undefined {
+  const raw = env.AGENTHUB_APPROVED_BY;
+  if (raw === undefined) return undefined;
+  const value = clean(raw).trim().slice(0, 128);
+  return value === '' ? undefined : value;
+}
+
+/** The error for an expansion that was not explicitly approved (exit 3, nothing written). */
+export function approvalRequiredError(plan: InstallPlan): AgentHubError {
+  const tokens = plan.capabilities ? expansionTokens(plan.capabilities.unapproved) : [];
+  const name = plan.skill.name;
+  return new AgentHubError(
+    'APPROVAL_REQUIRED',
+    `${name} ${plan.skill.version} can do more than the version you approved (${tokens.map((t) => `+${t}`).join(', ')}) — review it with "agenthub diff ${name}", then re-run with --approve-capabilities (--yes alone never approves new capabilities)`,
+    { skill: name, version: plan.skill.version, unapproved: tokens },
+  );
+}
 
 /** Most important blocker first: policy, then revocation, compatibility, drift, conflicts. */
 const BLOCKER_ORDER: InstallPlan['blockers'][number]['code'][] = [
@@ -60,20 +81,68 @@ export interface PlanFlowResult {
 export async function runPlan(
   ctx: CommandContext,
   plan: InstallPlan,
-  verb: { question: string; done: string; title?: string; caution?: boolean },
+  verb: {
+    question: string;
+    done: string;
+    title?: string;
+    caution?: boolean;
+    /** --approve-capabilities: approve an expansion without being asked. */
+    approveCapabilities?: boolean;
+  },
 ): Promise<PlanFlowResult> {
   printPlan(ctx, plan, verb.title);
   if (plan.blockers.length > 0) throw blockedError(plan);
   if (ctx.opts.dryRun) {
+    if (plan.capabilities?.approvalRequired && verb.approveCapabilities !== true) {
+      ctx.out.progress(
+        'dry run: applying this would need --approve-capabilities (or a yes at the prompt)',
+      );
+    }
     ctx.out.progress('dry run: nothing was changed');
     return { plan, result: null, dryRun: true };
   }
-  await confirmPlan(plan, verb.question, {
-    ...ctx.confirmOptions(),
-    caution: verb.caution === true,
-  });
+  const approve = await confirmCapabilities(ctx, plan, verb);
   const engine = await ctx.engine();
-  const result = await engine.apply(plan);
+  const result = await engine.apply(plan, approve === undefined ? {} : { approve });
   ctx.out.lines(formatInstalled(verb.done, result, ctx.out.style));
   return { plan, result, dryRun: false };
+}
+
+/**
+ * Confirmation and capability approval for one plan (trust features §4.3):
+ * - no expansion: the usual plan confirmation (a fresh install's confirmation is its approval);
+ * - expansion with --approve-capabilities: the plan still needs --yes or a yes at the prompt;
+ * - expansion on a terminal without --yes: one question, default No;
+ * - otherwise (--yes alone, --json, no terminal): APPROVAL_REQUIRED, nothing is written.
+ */
+async function confirmCapabilities(
+  ctx: CommandContext,
+  plan: InstallPlan,
+  verb: { question: string; caution?: boolean; approveCapabilities?: boolean },
+): Promise<ApprovalInput | undefined> {
+  const options = ctx.confirmOptions();
+  const by = approvedBy(ctx.env);
+  const caps = plan.capabilities;
+  const withBy = (input: ApprovalInput): ApprovalInput =>
+    by === undefined ? input : { ...input, by };
+  if (caps?.approvalRequired) {
+    if (verb.approveCapabilities === true) {
+      await confirmPlan(plan, verb.question, { ...options, caution: true });
+      return withBy({ mode: 'flag' });
+    }
+    if (!ctx.opts.yes && canPrompt(options)) {
+      const count = expansionCount(caps.unapproved);
+      const from = plan.previous === undefined ? '' : `${clean(plan.previous.version)} → `;
+      await confirm(
+        `Approve ${count} new capabilit${count === 1 ? 'y' : 'ies'} and update ${clean(plan.skill.name)} ${from}${clean(plan.skill.version)}?`,
+        { ...options, defaultYes: false, required: true },
+      );
+      return withBy({ mode: 'prompt' });
+    }
+    throw approvalRequiredError(plan);
+  }
+  await confirmPlan(plan, verb.question, { ...options, caution: verb.caution === true });
+  // A fresh install records an approval: say who confirmed it and how.
+  if (plan.previous === undefined) return withBy({ mode: ctx.opts.yes ? 'yes' : 'prompt' });
+  return verb.approveCapabilities === true ? withBy({ mode: 'flag' }) : undefined;
 }

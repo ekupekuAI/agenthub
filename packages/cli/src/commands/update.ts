@@ -1,5 +1,5 @@
 import type { ErrorCode, InstallPlan, InstallResult, Scope, UpdateCandidate } from '@agenthub/core';
-import { AgentHubError, EXIT_CODES, sameRegistry } from '@agenthub/core';
+import { AgentHubError, EXIT_CODES, expansionTokens, sameRegistry } from '@agenthub/core';
 import type { CommandContext, CommandResult } from '../context';
 import { formatInstalled, table } from '../format';
 import { asAgentHubError, clean } from '../output';
@@ -10,6 +10,8 @@ import { assertSkillName } from './shared';
 export interface UpdateOptions {
   check?: boolean;
   safe?: boolean;
+  /** --approve-capabilities: approve capabilities beyond the approved baseline. */
+  approveCapabilities?: boolean;
 }
 
 interface Skipped {
@@ -38,6 +40,7 @@ const SEVERITY: ErrorCode[] = [
   'INTEGRITY',
   'DRIFT',
   'POLICY_BLOCKED',
+  'APPROVAL_REQUIRED',
   'CONFLICT',
   'INCOMPATIBLE',
   'REGISTRY',
@@ -66,25 +69,53 @@ function candidatesTable(ctx: CommandContext, candidates: UpdateCandidate[]): vo
     c.current,
     c.latest ?? '—',
     c.latestCompatible ?? '—',
+    changeLabel(c),
     c.reason ? `${c.status} (${c.reason})` : c.status,
   ]);
   ctx.out.lines(
-    table(['SKILL', 'SCOPE', 'CURRENT', 'LATEST', 'COMPATIBLE', 'STATUS'], rows, ctx.out.style),
+    table(
+      ['SKILL', 'SCOPE', 'CURRENT', 'LATEST', 'COMPATIBLE', 'CHANGE', 'STATUS'],
+      rows,
+      ctx.out.style,
+    ),
   );
+  const expanding = candidates.filter((c) => c.change?.expansion);
+  for (const c of expanding) {
+    ctx.out.print(
+      `  ${clean(c.name)} ${clean(c.latestCompatible ?? '')} needs approval for: ${(c.change?.unapproved ?? []).map(clean).join(', ')}`,
+    );
+  }
+  if (expanding.length > 0) {
+    ctx.out.print(
+      ctx.out.style.dim(
+        '  (capability inventory from static analysis — review with "agenthub diff <skill>")',
+      ),
+    );
+  }
+}
+
+/** CHANGE column: what the available version can do compared with the approved baseline. */
+export function changeLabel(c: UpdateCandidate): string {
+  const change = c.change;
+  if (change === undefined) return '—';
+  if (!change.expansion) return change.removed > 0 ? 'narrower' : 'none';
+  const approvedBefore =
+    change.state === 'approved' || change.state === 'approved-carried' || change.state === 'stale';
+  return approvedBefore ? `expands (+${change.unapproved.length})` : 'unapproved';
 }
 
 async function checkUpdates(
   ctx: CommandContext,
   scope: Scope,
   name: string | undefined,
+  capabilities?: boolean,
 ): Promise<UpdateCandidate[]> {
   const engine = await ctx.engine();
   const channel = ctx.channel();
-  return engine.checkUpdates(
-    scope,
-    name === undefined ? undefined : [name],
-    channel === undefined ? {} : { channel },
-  );
+  return engine.checkUpdates(scope, name === undefined ? undefined : [name], {
+    ...(channel === undefined ? {} : { channel }),
+    capabilities: capabilities === true,
+  });
 }
 
 async function planFor(ctx: CommandContext, name: string): Promise<InstallPlan | null> {
@@ -125,13 +156,19 @@ export async function updateCommand(
   if (opts.safe && ctx.opts.dev) {
     throw new AgentHubError('USAGE', '--safe never overrides policy blocks; drop --dev');
   }
+  if (opts.safe && opts.approveCapabilities) {
+    throw new AgentHubError(
+      'USAGE',
+      '--safe only applies updates that need no new approval; drop --approve-capabilities',
+    );
+  }
   await requireRegistry(ctx);
   const engine = await ctx.engine();
   const scope = await ctx.scope();
   const s = ctx.out.style;
 
   if (opts.check) {
-    const candidates = await checkUpdates(ctx, scope, name);
+    const candidates = await checkUpdates(ctx, scope, name, true);
     candidatesTable(ctx, candidates);
     const attention = candidates.filter(
       (c) => NEEDS_REPLACEMENT.has(c.status) || c.status === 'digest-mismatch',
@@ -164,6 +201,7 @@ export async function updateCommand(
       question: `Update ${plan.skill.name} ${plan.previous?.version ?? ''} → ${plan.skill.version}?`,
       done: 'Updated',
       caution: change !== null,
+      approveCapabilities: opts.approveCapabilities === true,
     });
     return {
       data: {
@@ -247,9 +285,8 @@ export async function updateCommand(
         continue;
       }
       if (opts.safe) {
-        if (plan.policy.outcome !== 'allow' || plan.dev || hasReviewItems(plan)) {
-          const warns = plan.policy.findings.filter((f) => f.decision !== 'INFO');
-          const reason = `needs review: ${warns.map((f) => f.ruleId).join(', ') || plan.policy.outcome}`;
+        const reason = safeSkipReason(plan);
+        if (reason !== null) {
           if (replace) {
             failed.push({ ...base, target, reason: `${reason}; ${guidance}`, code: 'CONFLICT' });
           } else {
@@ -261,6 +298,7 @@ export async function updateCommand(
           updated.push({ name: candidate.name, from: candidate.current, to: target, result: null });
           continue;
         }
+        // No expansion, so nothing new is approved: the approval is carried forward.
         const result = await engine.apply(plan);
         ctx.out.lines(formatInstalled('Updated', result, s));
         updated.push({ name: candidate.name, from: candidate.current, to: target, result });
@@ -271,6 +309,7 @@ export async function updateCommand(
         title: 'Update plan',
         question: `Update ${plan.skill.name} ${candidate.current} → ${target}?`,
         done: 'Updated',
+        approveCapabilities: opts.approveCapabilities === true,
       });
       updated.push({
         name: candidate.name,
@@ -311,7 +350,32 @@ export async function updateCommand(
   };
 }
 
-/** Anything in an update plan a person should look at (WARN findings). */
-function hasReviewItems(plan: InstallPlan): boolean {
-  return plan.policy.findings.some((finding) => finding.decision !== 'INFO');
+const OUTCOME_RANK = { allow: 0, confirm: 1, block: 2 } as const;
+
+/**
+ * Why `update --safe` must not apply a plan (trust features §4.3), or null: it applies only an
+ * update with no capability expansion, an approval that still holds, and a policy outcome no
+ * worse than the installed version's. It never prompts and never approves.
+ */
+export function safeSkipReason(plan: InstallPlan): string | null {
+  if (plan.dev) return 'needs review: --dev';
+  const caps = plan.capabilities;
+  if (caps === undefined) return 'needs review: no capability report';
+  if (caps.approvalRequired) {
+    const tokens = expansionTokens(caps.unapproved).map((t) => `+${t}`);
+    if (caps.state === 'approved' || caps.state === 'approved-carried') {
+      return `capability expansion: ${tokens.join(', ')}`;
+    }
+  }
+  if (caps.state === 'stale')
+    return `approval stale (new under the current rules: ${caps.stale.join(', ')})`;
+  if (caps.state === 'unavailable') return 'approval cannot be checked: no intact installed copy';
+  if (caps.state !== 'approved' && caps.state !== 'approved-carried') return 'approval missing';
+  if (caps.approvalRequired) return 'capability expansion';
+  const previous = caps.previousOutcome ?? 'block';
+  if (OUTCOME_RANK[plan.policy.outcome] > OUTCOME_RANK[previous]) {
+    const warns = plan.policy.findings.filter((f) => f.decision !== 'INFO').map((f) => f.ruleId);
+    return `needs review: policy outcome ${plan.policy.outcome} (was ${previous}): ${[...new Set(warns)].join(', ')}`;
+  }
+  return null;
 }

@@ -907,3 +907,54 @@ Every feature has at least one failure-path test above (handoff §4.9).
 
 Every surface that shows an inventory or a diff (plan, `diff`, `info`, the `ci` summary, the skill
 page) carries the line: *"Capability inventory from static analysis — not a safety verdict."*
+
+## Appendix A — Wave A implementation decisions (2026-10-05)
+
+Wave A built F1 (capability lock, diff-gated updates) and F2 (outbound-reference lock: extraction,
+`ext.remote-instructions`, externals in the lock and in diffs). Wave B (F3–F7) is on hold, so the
+shared seams of §11.3 (`discoverSkills`, `Engine.inspect/assess/recordInPlace`,
+`loadSkillInPlace`, the `ci`/`adopt`/`audit` stubs) were **not** built. Where the draft above
+conflicted with the code or left room, the safer, simpler, deterministic option was chosen:
+
+| # | Draft | Built | Why |
+|---|---|---|---|
+| A1 | Analyzers call `scan.addExternal()` (§5) | One separate pass, `scanner/src/externals.ts`, called from `scanFile` with the already-decoded, LF-normalized text | Keeps the hardened analyzers untouched; the pass is linear (indexOf + char loops, regexes only on bounded tokens) and timed by tests |
+| A2 | fetch/install/run externals add `net.access` findings (§5.5) | Their hosts enter `capabilities.network` in `deriveCapabilities`; no new findings | The gate still sees every new host; existing policy outcomes and fixture expectations do not shift |
+| A3 | Per-key token grammars in the lock (§3.2) | One rule for all keys: 1–256 printable characters, no whitespace or control/format characters (fsWrite stays an enum); `capToken()` sanitizes every scanner subject the same way | A package can never produce a token the lock parser then rejects (which would make the repo's lock unreadable) |
+| A4 | v1 parsed with a lenient schema | v1 is parsed strictly with v1 fields only; v2 fields inside a v1 file are a `VALIDATION` error | Nothing is stripped or invented during migration |
+| A5 | — | Any `__proto__`/`constructor`/`prototype` key anywhere in a lock, snapshot `entry.json` or journal entry is a `VALIDATION` error | zod drops such keys silently; refusing is stricter than stripping |
+| A6 | `quarantine` entries are skipped by restore (§3.2) | A quarantined entry is a `CONFLICT` blocker for install, update, **restore** and rollback; `approve` refuses it (exit 3) | Fail closed, one rule everywhere |
+| A7 | `ScanResult.rulesetDigest/externals` required | Optional; the engine falls back to `sha256({capabilitySchema, scanner: scannerVersion})`; `SecurityPort.rulesetDigest` is optional too | Test fakes and older producers keep working; the real CLI port supplies `RULESET_DIGEST` |
+| A8 | `approvedBy` from `git config user.email` | `AGENTHUB_APPROVED_BY` only (cleaned, ≤ 128 chars); no subprocess | Self-asserted either way; avoids running git from the CLI |
+| A9 | `Engine.inspect` / `assess` / `recordInPlace` | Not exported. `verify` and `doctor` rescan privately; `Engine.approve(name, scope, input, { dryRun })` returns the preview the `approve` command prints | Wave B cancelled; smaller API |
+| A10 | `origin` field and `source: 'adopted'` in lock v2 | Not added (adopt is not built). Reserved `signer` / `quarantine` are added and round-trip | A field without a writer is untested surface; adding it later needs a schema change anyway |
+| A11 | `update --check` CHANGE values | `none`, `narrower`, `expands (+N)` (an approval exists), `unapproved` (no usable approval), `—` (not checked) | As drafted, plus `—` |
+| A12 | rollback prints the capability delta | rollback prints its usual result; the delta is computed in the plan (`plan.capabilities.delta`) but `rollback` does not print a plan | Unchanged rollback UX; rollback is never gated |
+| A13 | `diff` exit 2 for a non-registry source | `USAGE` (exit 2), as drafted; `--to` must be an exact version | — |
+| A14 | Lock caps of 256 tokens per key | 1024 tokens per key, 256 externals; the scanner itself emits `code.obfuscated` (`externals-overflow`, BLOCK) above 256 distinct externals or 4096 candidates in one file | Generous for real skills, bounded for hostile ones; an incomplete inventory is never approvable |
+| A15 | `prose.ts`-style line windows for remote instructions | A sentence is read across soft-wrapped lines of one paragraph (blank lines, headings and list items start a new block); inline code spans are also read as commands (`npx tool`, `curl … \| sh`) | Wrapped Markdown is the common case |
+| A16 | `remote-instructions` pinned → medium | As drafted: commit or sha256 pin lowers severity to medium (WARN undeclared, INFO declared) | — |
+
+Known limits found while building (not fixed in Wave A): the pre-existing shell analyzer takes
+several seconds on a 1 MiB line of nested brackets (the externals extractor itself takes ~30 ms on
+the same input); the ReDoS tests time the extractor directly.
+
+Lock v2 entry as written by this release (abridged):
+
+```json
+"web-testing": {
+  "approval": { "approvedAt": "2026-10-05T15:28:43.015Z", "capabilityDigest": "sha256:1b04…",
+                "digest": "sha256:27c9…", "rulesetDigest": "sha256:0f1d…" },
+  "capabilities": { "binaries": [], "dynamic": [], "env": ["PLAYWRIGHT_BROWSERS_PATH"],
+                    "exec": ["node", "npx"], "fsWrite": [], "installers": [], "markers": [],
+                    "network": ["*"], "prompt": [], "secrets": [] },
+  "capabilityDigest": "sha256:1b04…", "digest": "sha256:27c9…",
+  "externals": [
+    { "id": "playwright", "kind": "npm", "pin": "unpinned", "pinValue": null, "role": "run" },
+    { "host": "playwright.dev", "id": "https://playwright.dev", "kind": "url",
+      "pin": "unpinned", "pinValue": null, "role": "reference" } ],
+  "files": { "SKILL.md": "sha256:…", "agenthub.yaml": "sha256:…", "scripts/run.sh": "sha256:…" },
+  "installedAt": "…", "installedTargets": ["claude-code", "codex"], "paths": { … },
+  "registry": "file:…", "rulesetDigest": "sha256:0f1d…", "source": "registry", "version": "1.0.0"
+}
+```

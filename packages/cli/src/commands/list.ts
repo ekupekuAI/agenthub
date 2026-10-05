@@ -15,9 +15,21 @@ export async function listCommand(ctx: CommandContext): Promise<CommandResult> {
       agentList(skill.agents),
       skill.registry ?? skill.source,
       skill.status,
+      skill.approval,
     ]);
-    const lines = table(['SKILL', 'VERSION', 'SCOPE', 'AGENTS', 'SOURCE', 'STATUS'], rows, s);
+    const lines = table(
+      ['SKILL', 'VERSION', 'SCOPE', 'AGENTS', 'SOURCE', 'STATUS', 'APPROVAL'],
+      rows,
+      s,
+    );
     ctx.out.lines(lines);
+    if (skills.some((skill) => skill.approval !== 'approved')) {
+      ctx.out.print(
+        s.dim(
+          'APPROVAL from the lock: "recheck" = approved under other scanner rules (run "agenthub verify"); review with "agenthub approve <skill>"',
+        ),
+      );
+    }
   }
   return { data: { skills } };
 }

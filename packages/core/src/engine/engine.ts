@@ -7,15 +7,25 @@ import { hostname } from 'node:os';
 import path from 'node:path';
 import semver from 'semver';
 import { packSkill, readSkillArchive } from '../archive';
+import {
+  CAPABILITY_SCHEMA,
+  deriveCapabilities,
+  diffCapabilities,
+  expansionTokens,
+  summarizeFileChanges,
+  tokensOf,
+} from '../capabilities';
 import { AgentHubError, isAgentHubError } from '../errors';
-import { archiveDigest } from '../hash';
+import { archiveDigest, sha256Hex } from '../hash';
 import { MANIFEST_FILE, parseManifest } from '../manifest';
-import { buildSkillPackage, loadSkillFromDir, type RawFile } from '../package';
+import { buildSkillPackage, loadSkillFromDir, type RawFile, SKILL_FILE } from '../package';
 import { parseSkillMd } from '../skillmd';
 import {
   AGENT_IDS,
   type AgentEnvironment,
   type AgentId,
+  type CapabilityReport,
+  type LockApproval,
   type LockEntry,
   type LockFile,
   type PolicyResult,
@@ -25,6 +35,8 @@ import {
   type TargetFolder,
 } from '../types';
 import type {
+  ApprovalInput,
+  ApproveResult,
   DoctorProblem,
   DoctorReport,
   Engine,
@@ -33,15 +45,24 @@ import type {
   InstallRequest,
   InstallResult,
   ListedSkill,
+  PlanCapabilities,
   PlannedTarget,
   RegistrySource,
   RegistryVersion,
   RemoveResult,
   RequirementCheck,
   RestoreOptions,
+  SkillDiff,
   UpdateCandidate,
   VerifyReport,
 } from './api';
+import {
+  type ApprovalStatus,
+  approvalState,
+  approvedBaseline,
+  recordedApproval,
+  recordedSet,
+} from './approval';
 import { type LoadedConfig, loadConfig, sameRegistry } from './config';
 import { createFileRegistry } from './file-registry';
 import * as fsu from './fsutil';
@@ -59,6 +80,7 @@ import {
   emptyLock,
   parseLock,
   parseLockEntry,
+  peekLockVersion,
   readLock,
   serializeLock,
   sortKeysDeep,
@@ -86,13 +108,55 @@ const DISPLAY_NAMES: Record<AgentId, string> = {
   vscode: 'VS Code + GitHub Copilot',
 };
 
-type AuditAction = 'install' | 'update' | 'rollback' | 'remove' | 'override';
+type AuditAction = 'install' | 'update' | 'rollback' | 'remove' | 'override' | 'approve' | 'adopt';
 
 interface PlanInternals {
   pkg: SkillPackage;
   action: 'install' | 'update' | 'rollback';
   lockSource: LockEntry['source'];
   registry: string | null;
+  /** Rollback: the snapshot's own entry, written back with its approval. */
+  carry?: LockEntry;
+}
+
+/** The capability fields of an entry (block, approval, provenance and reserved fields). */
+const CARRIED_FIELDS = [
+  'capabilities',
+  'capabilityDigest',
+  'rulesetDigest',
+  'externals',
+  'approval',
+  'signer',
+  'quarantine',
+] as const satisfies readonly (keyof LockEntry)[];
+
+function carriedFields(entry: LockEntry): Partial<LockEntry> {
+  const out: Partial<LockEntry> = {};
+  for (const key of CARRIED_FIELDS) {
+    if (entry[key] !== undefined) (out as Record<string, unknown>)[key] = entry[key];
+  }
+  return out;
+}
+
+/** The lock's capability block for a report. */
+function capabilityBlock(report: CapabilityReport): Partial<LockEntry> {
+  return {
+    capabilities: tokensOf(report.set),
+    capabilityDigest: report.digest,
+    rulesetDigest: report.rulesetDigest,
+    externals: report.set.externals,
+  };
+}
+
+function quarantineText(entry: LockEntry): string {
+  const reason = entry.quarantine?.reason;
+  return reason === undefined ? '' : ` (${reason})`;
+}
+
+/** Package text of SKILL.md, for the line-count summary. */
+function skillMdText(pkg: SkillPackage): string {
+  const file = pkg.files.find((f) => f.path === SKILL_FILE);
+  return file === undefined ? '' : new TextDecoder().decode(file.content);
 }
 
 /** Packages behind plans made by this module, so apply() never re-reads the source. */
@@ -116,6 +180,26 @@ interface BuildPlanInput {
   hints?: string[];
   /** Blockers found before planning (registry checks of restore / rollback). */
   blockers?: Blocker[];
+  /** Rollback: the snapshot's entry, carried verbatim (with its own approval). */
+  carry?: LockEntry;
+}
+
+/** A rescan of what is installed for one lock entry. */
+/** Everything known about one installed entry after a rescan (verify, doctor, approve). */
+interface InstalledInspection {
+  name: string;
+  scope: Scope;
+  entry: LockEntry;
+  verify: VerifyReport;
+  current: CapabilityReport | null;
+  policy: PolicyResult | null;
+  approval: ApprovalStatus;
+}
+
+interface InstalledScan {
+  pkg: SkillPackage;
+  report: CapabilityReport;
+  strict: PolicyResult;
 }
 
 interface TargetState {
@@ -683,16 +767,179 @@ class InstallEngine implements Engine {
   private evaluatePolicy(
     pkg: SkillPackage,
     dev: boolean,
-  ): { policy: PolicyResult; override: boolean; strict: PolicyResult } {
+  ): { policy: PolicyResult; override: boolean; strict: PolicyResult; report: CapabilityReport } {
     const scan = this.deps.security.scan(
       pkg.files.map((file) => ({ path: file.path, content: file.content, kind: file.kind })),
     );
     const strict = this.deps.security.evaluate(scan.findings, pkg.manifest, { dev: false });
-    if (strict.outcome !== 'block' || !dev) return { policy: strict, override: false, strict };
+    // Derived from the strict evaluation, so --dev can never alter the capability set.
+    const report = deriveCapabilities(
+      strict.findings,
+      pkg.manifest,
+      scan.externals ?? [],
+      scan.rulesetDigest ?? this.fallbackRulesetDigest(scan.scannerVersion),
+    );
+    if (strict.outcome !== 'block' || !dev) {
+      return { policy: strict, override: false, strict, report };
+    }
     return {
       policy: this.deps.security.evaluate(scan.findings, pkg.manifest, { dev: true }),
       override: true,
       strict,
+      report,
+    };
+  }
+
+  private fallbackRulesetDigest(scannerVersion: string): string {
+    const text = JSON.stringify({ capabilitySchema: CAPABILITY_SCHEMA, scanner: scannerVersion });
+    return `sha256:${sha256Hex(new TextEncoder().encode(text))}`;
+  }
+
+  private rulesetCache: string | undefined;
+
+  /** The current scanner ruleset ('sha256:<hex>'). */
+  private rulesetDigest(): string {
+    if (this.rulesetCache === undefined) {
+      const port = this.deps.security;
+      if (port.rulesetDigest !== undefined) this.rulesetCache = port.rulesetDigest;
+      else {
+        const empty = port.scan([]);
+        this.rulesetCache = empty.rulesetDigest ?? this.fallbackRulesetDigest(empty.scannerVersion);
+      }
+    }
+    return this.rulesetCache;
+  }
+
+  /**
+   * The exact package of an installed entry from local bytes only: an intact installed copy,
+   * else the cache. Never the registry (a baseline must not come from the party being checked).
+   */
+  private async installedPackage(
+    scope: Scope,
+    name: string,
+    entry: LockEntry,
+  ): Promise<SkillPackage | null> {
+    for (const lockPath of Object.keys(entry.paths)) {
+      let absDir: string;
+      try {
+        absDir = this.resolveLockPath(scope, lockPath, name).absDir;
+      } catch {
+        continue;
+      }
+      if ((await fsu.pathKind(absDir)) !== 'dir') continue;
+      const hashes = await fsu.hashInstalledDir(absDir);
+      if (!Object.entries(entry.files).every(([file, hash]) => hashes[file] === hash)) continue;
+      try {
+        const pkg = buildSkillPackage(await this.readFilesFrom(absDir, Object.keys(entry.files)), {
+          folderName: name,
+        });
+        if (pkg.digest === entry.digest) return withVersion(pkg, entry.version);
+      } catch {
+        // A copy that no longer builds is not a baseline; try the next one.
+      }
+    }
+    const cached = await this.readCached(entry.digest, name);
+    return cached === null ? null : withVersion(cached, entry.version);
+  }
+
+  /** Rescan of an installed entry (intact copy or cache); null when neither exists. */
+  private async scanInstalled(
+    scope: Scope,
+    name: string,
+    entry: LockEntry,
+  ): Promise<InstalledScan | null> {
+    const pkg = await this.installedPackage(scope, name, entry);
+    if (pkg === null) return null;
+    const { strict, report } = this.evaluatePolicy(pkg, false);
+    return { pkg, report, strict };
+  }
+
+  /** Approval state and approved baseline of an installed entry. */
+  private async baselineOf(
+    scope: Scope,
+    name: string,
+    entry: LockEntry,
+  ): Promise<{
+    scan: InstalledScan | null;
+    status: ApprovalStatus;
+    baseline: CapabilityReport['set'];
+  }> {
+    const scan = await this.scanInstalled(scope, name, entry);
+    const status = approvalState(entry, scan?.report ?? null, scan?.strict.outcome ?? null);
+    return { scan, status, baseline: approvedBaseline(entry, scan?.report ?? null, status) };
+  }
+
+  /** The capability view of a plan (design §4.2–§4.3). */
+  private async planCapabilities(
+    scope: Scope,
+    pkg: SkillPackage,
+    previous: LockEntry | undefined,
+    report: CapabilityReport,
+    strict: PolicyResult,
+    carry: LockEntry | undefined,
+  ): Promise<PlanCapabilities> {
+    const approvable = strict.outcome !== 'block';
+    const base = { rulesetDigest: report.rulesetDigest, candidate: report, approvable };
+    if (previous === undefined && carry === undefined) {
+      return {
+        ...base,
+        state: 'fresh',
+        stale: [],
+        delta: null,
+        unapproved: diffCapabilities(null, report.set),
+        approvalRequired: false,
+        previousOutcome: null,
+        files: null,
+      };
+    }
+    if (carry === undefined && previous !== undefined && previous.digest === pkg.digest) {
+      // Same bytes as installed: the rescan of the candidate is the rescan of the entry.
+      const status = approvalState(previous, report, strict.outcome);
+      return {
+        ...base,
+        state: status.state,
+        stale: status.stale,
+        delta: diffCapabilities(report.set, report.set),
+        unapproved: diffCapabilities(report.set, report.set),
+        approvalRequired: false,
+        previousOutcome: strict.outcome,
+        files: null,
+      };
+    }
+    const scanned =
+      previous === undefined ? null : await this.baselineOf(scope, pkg.name, previous);
+    const installedSet =
+      scanned?.scan?.report.set ?? (previous ? recordedSet(previous) : null) ?? null;
+    let state: PlanCapabilities['state'];
+    let stale: string[] = [];
+    let unapproved = diffCapabilities(scanned?.baseline ?? null, report.set);
+    if (carry !== undefined) {
+      // Rollback restores the snapshot entry with its own approval; never gated.
+      const status = approvalState(carry, report, strict.outcome);
+      state = status.state;
+      stale = status.stale;
+      unapproved = diffCapabilities(report.set, report.set);
+    } else if (scanned === null || scanned.scan === null) {
+      state = 'unavailable';
+    } else {
+      state = scanned.status.state;
+      stale = scanned.status.stale;
+    }
+    const previousPkg = scanned?.scan?.pkg ?? null;
+    return {
+      ...base,
+      state,
+      stale,
+      delta: diffCapabilities(installedSet, report.set),
+      unapproved,
+      approvalRequired: carry === undefined && unapproved.expansion,
+      previousOutcome: scanned?.scan?.strict.outcome ?? null,
+      files: summarizeFileChanges(
+        previous === undefined
+          ? null
+          : { files: previous.files, skillMd: previousPkg ? skillMdText(previousPkg) : null },
+        { files: pkg.fileHashes, skillMd: skillMdText(pkg) },
+      ),
     };
   }
 
@@ -803,7 +1050,7 @@ class InstallEngine implements Engine {
     }
 
     // Policy.
-    const { policy, override, strict } = this.evaluatePolicy(pkg, input.dev);
+    const { policy, override, strict, report } = this.evaluatePolicy(pkg, input.dev);
     if (policy.outcome === 'block' && !override) {
       blockers.push({ code: 'POLICY_BLOCKED', message: describeBlock(policy) });
     }
@@ -811,6 +1058,48 @@ class InstallEngine implements Engine {
       hints.push(
         `--dev: installing despite BLOCK findings (${describeBlock(strict).slice('blocked by policy: '.length)}); the override is written to the audit log`,
       );
+    }
+
+    // Reserved lock fields fail closed (trust features §3.2).
+    for (const entry of [previous, input.carry]) {
+      if (entry?.quarantine !== undefined) {
+        blockers.push({
+          code: 'CONFLICT',
+          message: `${pkg.name} is quarantined in the lock${quarantineText(entry)} — it cannot be installed, updated or restored; remove the entry with "agenthub remove ${pkg.name}" after reviewing why`,
+        });
+        break;
+      }
+    }
+    if (previous?.signer !== undefined && previous.digest !== pkg.digest) {
+      blockers.push({
+        code: 'CONFLICT',
+        message: `${pkg.name} has a signer in the lock: changing it needs an agenthub that verifies signatures`,
+      });
+    }
+
+    // Capabilities and the approval gate.
+    const capabilities = await this.planCapabilities(
+      scope,
+      pkg,
+      previous,
+      report,
+      strict,
+      input.carry,
+    );
+    if (input.carry === undefined && previous !== undefined && previous.digest === pkg.digest) {
+      if (capabilities.state === 'stale') {
+        hints.push(
+          `the approval of ${pkg.name} predates the current scanner rules, which also see: ${capabilities.stale.join(', ')} — review and run "agenthub approve ${pkg.name}"`,
+        );
+      } else if (
+        capabilities.state === 'unapproved' &&
+        capabilities.approvable &&
+        previous.approval === undefined
+      ) {
+        hints.push(
+          `${pkg.name} has no recorded capability approval — review it with "agenthub approve ${pkg.name}"`,
+        );
+      }
     }
 
     // Targets.
@@ -893,7 +1182,11 @@ class InstallEngine implements Engine {
       issues: [...pkg.issues],
       blockers,
       needsConfirmation:
-        policy.outcome !== 'allow' || override || targets.some((t) => t.action === 'replace'),
+        policy.outcome !== 'allow' ||
+        override ||
+        targets.some((t) => t.action === 'replace') ||
+        capabilities.approvalRequired,
+      capabilities,
       hints,
       ...(previous ? { previous } : {}),
       dev: input.dev,
@@ -909,6 +1202,7 @@ class InstallEngine implements Engine {
             : 'install',
       lockSource: input.lockSource,
       registry: input.registry,
+      ...(input.carry === undefined ? {} : { carry: input.carry }),
     });
     return plan;
   }
@@ -961,14 +1255,17 @@ class InstallEngine implements Engine {
   // Apply (design §8.4)
   // -------------------------------------------------------------------------
 
-  async apply(plan: InstallPlan): Promise<InstallResult> {
+  async apply(plan: InstallPlan, opts: { approve?: ApprovalInput } = {}): Promise<InstallResult> {
     const blocked = blockerError(plan);
     if (blocked) throw blocked;
-    return this.exclusive(() => this.applyLocked(plan));
+    return this.exclusive(() => this.applyLocked(plan, opts));
   }
 
   /** apply() for callers that already hold the process lock. */
-  private async applyLocked(plan: InstallPlan): Promise<InstallResult> {
+  private async applyLocked(
+    plan: InstallPlan,
+    opts: { approve?: ApprovalInput } = {},
+  ): Promise<InstallResult> {
     const blocked = blockerError(plan);
     if (blocked) throw blocked;
     const internals = INTERNALS.get(plan) ?? (await this.rehydrate(plan));
@@ -990,7 +1287,7 @@ class InstallEngine implements Engine {
     }
 
     // Policy is re-checked here so a plan edited after planning cannot skip it.
-    const { policy, override, strict } = this.evaluatePolicy(pkg, plan.dev);
+    const { policy, override, strict, report } = this.evaluatePolicy(pkg, plan.dev);
     if (policy.outcome === 'block' && !override) {
       throw new AgentHubError('POLICY_BLOCKED', describeBlock(policy), {
         findings: policy.findings.filter((f) => f.decision === 'BLOCK'),
@@ -1002,6 +1299,41 @@ class InstallEngine implements Engine {
     const lock: LockFile =
       previousLockText === null ? emptyLock() : parseLock(previousLockText, lockFile);
     const previous = own(lock.skills, name);
+    const carry = internals.carry;
+
+    // Reserved fields are re-checked against the lock as read now.
+    const quarantined = [previous, carry].find((entry) => entry?.quarantine !== undefined);
+    if (quarantined !== undefined) {
+      throw new AgentHubError(
+        'CONFLICT',
+        `${name} is quarantined in the lock${quarantineText(quarantined)}`,
+      );
+    }
+    if (previous?.signer !== undefined && previous.digest !== pkg.digest) {
+      throw new AgentHubError(
+        'CONFLICT',
+        `${name} has a signer in the lock: changing it needs an agenthub that verifies signatures`,
+      );
+    }
+
+    // The capability gate (design §4.2), recomputed from the lock and the bytes as they are now,
+    // so a plan made earlier, edited, or deserialized cannot skip it. Rollback is never gated.
+    const replacing = previous !== undefined && previous.digest !== pkg.digest;
+    let expansion: string[] = [];
+    if (replacing && carry === undefined) {
+      const { baseline } = await this.baselineOf(scope, name, previous);
+      const unapproved = diffCapabilities(baseline, report.set);
+      if (unapproved.expansion) {
+        expansion = expansionTokens(unapproved);
+        if (opts.approve === undefined) {
+          throw new AgentHubError(
+            'APPROVAL_REQUIRED',
+            `${name} ${plan.skill.version} can do more than the version you approved (${expansion.join(', ')}) — review it with "agenthub diff ${name}" and approve it explicitly (--approve-capabilities)`,
+            { skill: name, version: plan.skill.version, unapproved: expansion },
+          );
+        }
+      }
+    }
 
     // The disk must still look the way the plan saw it.
     for (const target of plan.targets) {
@@ -1049,7 +1381,7 @@ class InstallEngine implements Engine {
     for (const target of [...plan.targets].sort((a, b) => (a.lockPath < b.lockPath ? -1 : 1))) {
       paths[target.lockPath] = sortAgents(target.agents);
     }
-    const newEntry: LockEntry = {
+    const baseEntry: LockEntry = {
       version: plan.skill.version,
       digest: pkg.digest,
       source: internals.lockSource,
@@ -1060,6 +1392,16 @@ class InstallEngine implements Engine {
       installedAt:
         previous && previous.digest === pkg.digest ? previous.installedAt : now.toISOString(),
     };
+    const { entry: newEntry, approvalMode } = this.entryWithCapabilities({
+      base: baseEntry,
+      previous,
+      carry,
+      report,
+      approvable: strict.outcome !== 'block',
+      expanded: expansion.length > 0,
+      approve: opts.approve,
+      now,
+    });
 
     const auditBase = {
       name,
@@ -1068,6 +1410,9 @@ class InstallEngine implements Engine {
       scope,
       targets: plan.targets.map((t) => t.lockPath),
       dev: plan.dev,
+      capabilityDigest: newEntry.capabilityDigest ?? null,
+      approval: approvalMode,
+      ...(expansion.length > 0 ? { approvedExpansion: expansion } : {}),
     };
     if (override) {
       await this.audit({
@@ -1163,6 +1508,62 @@ class InstallEngine implements Engine {
       result.hints.push(`could not clean up the transaction files: ${errorText(error)}`);
     }
     return result;
+  }
+
+  /**
+   * The lock entry an apply writes (design §4.3):
+   * - same digest (restore, re-target): the capability block, approval and reserved fields are
+   *   carried verbatim, so a scanner upgrade never dirties the lock;
+   * - rollback: the snapshot entry's block, with its approval when bound to its digest;
+   * - another digest: a fresh block; an approval only when the strict outcome allows it —
+   *   new on a fresh install or with an explicit approval, carried forward when nothing expands.
+   */
+  private entryWithCapabilities(args: {
+    base: LockEntry;
+    previous: LockEntry | undefined;
+    carry: LockEntry | undefined;
+    report: CapabilityReport;
+    approvable: boolean;
+    expanded: boolean;
+    approve: ApprovalInput | undefined;
+    now: Date;
+  }): { entry: LockEntry; approvalMode: string } {
+    const { base, previous, carry, report, approve, now } = args;
+    if (carry !== undefined) {
+      const fields = carriedFields(carry);
+      if (fields.approval !== undefined && fields.approval.digest !== carry.digest) {
+        delete fields.approval;
+      }
+      return {
+        entry: { ...base, ...fields },
+        approvalMode: fields.approval === undefined ? 'none' : 'rollback',
+      };
+    }
+    if (previous !== undefined && previous.digest === base.digest) {
+      const fields = carriedFields(previous);
+      return { entry: { ...base, ...fields }, approvalMode: 'unchanged' };
+    }
+    const entry: LockEntry = { ...base, ...capabilityBlock(report) };
+    if (!args.approvable) return { entry, approvalMode: 'none' };
+    const approval: LockApproval = {
+      digest: base.digest,
+      capabilityDigest: report.digest,
+      rulesetDigest: report.rulesetDigest,
+      approvedAt: now.toISOString(),
+    };
+    let mode: string;
+    if (previous === undefined || args.expanded || approve !== undefined) {
+      if (approve?.by !== undefined) approval.approvedBy = approve.by;
+      if (approve?.note !== undefined) approval.note = approve.note;
+      mode = approve?.mode ?? (previous === undefined ? 'yes' : 'flag');
+    } else {
+      const by = previous.approval?.approvedBy;
+      if (by !== undefined) approval.approvedBy = by;
+      approval.note = `carried forward from ${previous.digest.slice('sha256:'.length, 'sha256:'.length + 8)}`;
+      mode = 'carried';
+    }
+    entry.approval = approval;
+    return { entry, approvalMode: mode };
   }
 
   private async writeScopeLock(
@@ -1923,18 +2324,196 @@ class InstallEngine implements Engine {
   }
 
   async verify(scope: Scope, name?: string): Promise<VerifyReport[]> {
+    return (await this.inspectAll(scope, name)).map((inspection) => inspection.verify);
+  }
+
+  /** Verify + rescan + approval state of one entry. */
+  private async inspectEntry(
+    scope: Scope,
+    name: string,
+    entry: LockEntry,
+  ): Promise<InstalledInspection> {
+    const verify = await this.verifyEntry(scope, name, entry);
+    const scan = await this.scanInstalled(scope, name, entry);
+    const approval = approvalState(entry, scan?.report ?? null, scan?.strict.outcome ?? null);
+    verify.capabilities = {
+      state: approval.state,
+      stale: approval.stale,
+      lockMatches: approval.lockMatches,
+      checked: approval.checked,
+      missingBlock: entry.capabilityDigest === undefined,
+    };
+    return {
+      name,
+      scope,
+      entry,
+      verify,
+      current: scan?.report ?? null,
+      policy: scan?.strict ?? null,
+      approval,
+    };
+  }
+
+  private async inspectAll(scope: Scope, name?: string): Promise<InstalledInspection[]> {
     const lock = await readLock(this.lockFile(scope));
     if (name !== undefined) {
       const entry = own(lock.skills, name);
       if (!entry)
         throw new AgentHubError('NOT_FOUND', `${name} is not installed at ${scope} scope`);
-      return [await this.verifyEntry(scope, name, entry)];
+      return [await this.inspectEntry(scope, name, entry)];
     }
-    const out: VerifyReport[] = [];
+    const out: InstalledInspection[] = [];
     for (const skill of Object.keys(lock.skills).sort()) {
-      out.push(await this.verifyEntry(scope, skill, lock.skills[skill] as LockEntry));
+      out.push(await this.inspectEntry(scope, skill, lock.skills[skill] as LockEntry));
     }
     return out;
+  }
+
+  // -------------------------------------------------------------------------
+  // Approvals, diff and in-place records (trust features §4, §6)
+  // -------------------------------------------------------------------------
+
+  async approve(
+    name: string,
+    scope: Scope,
+    input: ApprovalInput = {},
+    opts: { dryRun?: boolean } = {},
+  ): Promise<ApproveResult> {
+    const run = async (): Promise<ApproveResult> => {
+      const lockFile = this.lockFile(scope);
+      const lock = await readLock(lockFile);
+      const entry = own(lock.skills, name);
+      if (!entry)
+        throw new AgentHubError('NOT_FOUND', `${name} is not installed at ${scope} scope`);
+      if (entry.quarantine !== undefined) {
+        throw new AgentHubError(
+          'POLICY_BLOCKED',
+          `${name} is quarantined in the lock${quarantineText(entry)}; it cannot be approved`,
+        );
+      }
+      const verify = await this.verifyEntry(scope, name, entry);
+      if (!verify.ok || verify.targets.length === 0) {
+        throw new AgentHubError(
+          'DRIFT',
+          `${name}: the installed files differ from the lock — only bytes that verify can be approved (see "agenthub verify ${name}")`,
+          { report: verify },
+        );
+      }
+      const pkg = await this.installedPackage(scope, name, entry);
+      if (pkg === null) {
+        throw new AgentHubError('DRIFT', `${name}: no intact installed copy to approve`);
+      }
+      const { strict, report } = this.evaluatePolicy(pkg, false);
+      if (strict.outcome === 'block') {
+        throw new AgentHubError(
+          'POLICY_BLOCKED',
+          `${name} cannot be approved: ${describeBlock(strict)}`,
+          { findings: strict.findings.filter((f) => f.decision === 'BLOCK') },
+        );
+      }
+      const status = approvalState(entry, report, strict.outcome);
+      const before = approvedBaseline(entry, report, status);
+      const newlyApproved = expansionTokens(diffCapabilities(before, report.set));
+      const approval: LockApproval = {
+        digest: entry.digest,
+        capabilityDigest: report.digest,
+        rulesetDigest: report.rulesetDigest,
+        approvedAt: this.now().toISOString(),
+      };
+      if (input.by !== undefined) approval.approvedBy = input.by;
+      if (input.note !== undefined) approval.note = input.note;
+      const result: ApproveResult = {
+        name,
+        scope,
+        version: entry.version,
+        approval,
+        previousState: status.state,
+        newlyApproved,
+        report,
+        dryRun: opts.dryRun === true,
+      };
+      if (opts.dryRun === true) return result;
+      lock.skills[name] = { ...entry, ...capabilityBlock(report), approval };
+      const guard = this.guard(scope);
+      await this.writeScopeLock(guard, scope, lockFile, lock);
+      await this.audit({
+        action: 'approve',
+        name,
+        version: entry.version,
+        digest: entry.digest,
+        scope,
+        capabilityDigest: report.digest,
+        rulesetDigest: report.rulesetDigest,
+        approval: input.mode ?? 'command',
+        newlyApproved,
+        result: 'ok',
+      }).catch(() => undefined);
+      return result;
+    };
+    return opts.dryRun === true ? run() : this.exclusive(run);
+  }
+
+  async diff(
+    name: string,
+    scope: Scope,
+    opts: { to?: string; channel?: 'stable' | 'beta' } = {},
+  ): Promise<SkillDiff> {
+    const lock = await readLock(this.lockFile(scope));
+    const entry = own(lock.skills, name);
+    if (!entry) throw new AgentHubError('NOT_FOUND', `${name} is not installed at ${scope} scope`);
+    if (entry.source !== 'registry') {
+      throw new AgentHubError(
+        'USAGE',
+        `${name} was not installed from a registry; compare a local version with "agenthub install <folder> --dry-run"`,
+      );
+    }
+    const registry = this.registry(scope);
+    if (!sameRegistry(entry.registry, registry.id)) {
+      throw new AgentHubError(
+        'CONFLICT',
+        `${name} was installed from ${entry.registry ?? 'an unknown registry'}, but the configured registry is ${registry.id}`,
+        { recorded: entry.registry, configured: registry.id },
+      );
+    }
+    const channel = opts.channel ?? this.config(scope).effective.channel ?? 'stable';
+    const versions = await registry.listVersions(name);
+    const outcome = resolveVersion(versions, {
+      range: opts.to ?? '*',
+      channel,
+      agents: entry.installedTargets,
+    });
+    if (outcome.kind === 'none') throw new AgentHubError('NOT_FOUND', `${name}: ${outcome.reason}`);
+    if (outcome.kind === 'revoked') {
+      throw new AgentHubError(
+        'NOT_FOUND',
+        `${name}: version ${outcome.version.version} is revoked${outcome.reason ? `: ${outcome.reason}` : ''}`,
+      );
+    }
+    const { pkg } = await this.downloadVerified(registry, name, outcome.version);
+    const { report } = this.evaluatePolicy(pkg, false);
+    const { scan, status, baseline } = await this.baselineOf(scope, name, entry);
+    const same = pkg.digest === entry.digest;
+    const unapproved = diffCapabilities(baseline, report.set);
+    return {
+      name,
+      scope,
+      from: {
+        version: entry.version,
+        digest: entry.digest,
+        capabilityDigest: scan?.report.digest ?? entry.capabilityDigest ?? null,
+      },
+      to: { version: pkg.version, digest: pkg.digest, capabilityDigest: report.digest },
+      rulesetDigest: report.rulesetDigest,
+      baseline: scan === null ? 'unavailable' : status.state,
+      delta: diffCapabilities(scan?.report.set ?? recordedSet(entry), report.set),
+      unapproved: same ? [] : expansionTokens(unapproved),
+      approvalRequired: !same && unapproved.expansion,
+      candidate: report,
+      files: summarizeFileChanges(
+        { files: entry.files, skillMd: scan === null ? null : skillMdText(scan.pkg) },
+        { files: pkg.fileHashes, skillMd: skillMdText(pkg) },
+      ),
+    };
   }
 
   async list(scope?: Scope): Promise<ListedSkill[]> {
@@ -1947,7 +2526,7 @@ class InstallEngine implements Engine {
         const anyMissing = report.targets.some(
           (t) => t.files.length > 0 && t.files.every((f) => f.status === 'missing'),
         );
-        out.push({
+        const listed: ListedSkill = {
           name,
           version: entry.version,
           scope: current,
@@ -1956,7 +2535,16 @@ class InstallEngine implements Engine {
           registry: entry.registry,
           status: anyMissing ? 'missing' : report.ok ? 'ok' : 'drift',
           installedAt: entry.installedAt,
-        });
+          approval: recordedApproval(entry, this.rulesetDigest()),
+        };
+        if (entry.capabilityDigest !== undefined) listed.capabilityDigest = entry.capabilityDigest;
+        if (listed.approval !== 'unapproved' && entry.approval !== undefined) {
+          listed.approvedAt = entry.approval.approvedAt;
+          if (entry.approval.approvedBy !== undefined) {
+            listed.approvedBy = entry.approval.approvedBy;
+          }
+        }
+        out.push(listed);
       }
     }
     return out;
@@ -1969,7 +2557,48 @@ class InstallEngine implements Engine {
   async checkUpdates(
     scope: Scope,
     names?: string[],
-    opts: { channel?: 'stable' | 'beta' } = {},
+    opts: { channel?: 'stable' | 'beta'; capabilities?: boolean } = {},
+  ): Promise<UpdateCandidate[]> {
+    const candidates = await this.checkUpdatesBase(scope, names, opts);
+    if (opts.capabilities !== true) return candidates;
+    const registry = this.registryOrNull(scope);
+    if (registry === null) return candidates;
+    const lock = await readLock(this.lockFile(scope));
+    const channel = opts.channel ?? this.config(scope).effective.channel ?? 'stable';
+    for (const candidate of candidates) {
+      const entry = own(lock.skills, candidate.name);
+      if (candidate.status !== 'available' || entry === undefined) continue;
+      const versions = await registry.listVersions(candidate.name);
+      const outcome = resolveVersion(versions, {
+        range: candidate.latestCompatible ?? '*',
+        channel,
+        agents: entry.installedTargets,
+      });
+      if (outcome.kind !== 'ok') continue;
+      // Downloaded and verified in memory; nothing is written.
+      const { pkg } = await this.downloadVerified(registry, candidate.name, outcome.version);
+      const { report } = this.evaluatePolicy(pkg, false);
+      const { scan, status, baseline } = await this.baselineOf(scope, candidate.name, entry);
+      const unapproved = diffCapabilities(baseline, report.set);
+      const installedSet = scan?.report.set ?? recordedSet(entry);
+      const delta = diffCapabilities(installedSet, report.set);
+      const removed =
+        Object.values(delta.removed).reduce((sum, list) => sum + list.length, 0) +
+        delta.externals.removed.length;
+      candidate.change = {
+        expansion: unapproved.expansion,
+        unapproved: expansionTokens(unapproved),
+        removed,
+        state: scan === null ? 'unavailable' : status.state,
+      };
+    }
+    return candidates;
+  }
+
+  private async checkUpdatesBase(
+    scope: Scope,
+    names: string[] | undefined,
+    opts: { channel?: 'stable' | 'beta' },
   ): Promise<UpdateCandidate[]> {
     const lock = await readLock(this.lockFile(scope));
     const registry = this.registryOrNull(scope);
@@ -2177,6 +2806,7 @@ class InstallEngine implements Engine {
       action: 'rollback',
       hints: check.hints,
       blockers: check.blockers,
+      carry: entry,
     });
     const blocked = blockerError(plan);
     if (blocked) throw blocked;
@@ -2427,6 +3057,52 @@ class InstallEngine implements Engine {
     return null;
   }
 
+  /** Doctor problems for one entry's capability record and approval (trust features §6.3). */
+  private approvalProblems(
+    name: string,
+    scope: Scope,
+    inspection: InstalledInspection,
+  ): DoctorProblem[] {
+    const { entry, approval } = inspection;
+    const label = `${name} (${scope})`;
+    const out: DoctorProblem[] = [];
+    if (entry.quarantine !== undefined) {
+      out.push({
+        level: 'error',
+        code: 'quarantine.present',
+        message: `${label} is quarantined in the lock${quarantineText(entry)}`,
+      });
+    }
+    if (approval.lockMatches === false) {
+      out.push({
+        level: 'error',
+        code: 'lock.capabilities-mismatch',
+        message: `${label}: the lock's capability record does not describe the installed files — review the lock change, then run "agenthub approve ${name}"`,
+      });
+      return out;
+    }
+    if (entry.capabilityDigest === undefined) {
+      out.push({
+        level: 'warning',
+        code: 'lock.capabilities-missing',
+        message: `${label} has no capability record (written by an older agenthub) — review it with "agenthub approve ${name}"`,
+      });
+    } else if (approval.state === 'stale') {
+      out.push({
+        level: 'warning',
+        code: 'approval.stale',
+        message: `${label}: the current scanner rules also see ${approval.stale.join(', ')} — review and run "agenthub approve ${name}"`,
+      });
+    } else if (approval.state === 'unapproved' && approval.checked) {
+      out.push({
+        level: 'warning',
+        code: 'approval.missing',
+        message: `${label} has no capability approval — review it with "agenthub approve ${name}"`,
+      });
+    }
+    return out;
+  }
+
   async doctor(): Promise<DoctorReport> {
     const problems: DoctorProblem[] = [];
     const agents = await this.deps.agents.detect();
@@ -2455,6 +3131,14 @@ class InstallEngine implements Engine {
       let skills: Record<string, LockEntry> = {};
       try {
         skills = (await readLock(lockFile)).skills;
+        const text = await fsu.readTextOrNull(lockFile);
+        if (text !== null && peekLockVersion(text) === 1) {
+          problems.push({
+            level: 'warning',
+            code: 'lock.v1',
+            message: `${lockFile} is a version 1 lock; the next command that changes it writes version 2 (upgrade agenthub for the whole team first: older versions cannot read version 2)`,
+          });
+        }
       } catch (error) {
         problems.push({ level: 'error', code: 'lock.invalid', message: errorText(error) });
       }
@@ -2471,7 +3155,9 @@ class InstallEngine implements Engine {
       for (const name of Object.keys(skills).sort()) {
         const entry = skills[name] as LockEntry;
         try {
-          const report = await this.verifyEntry(scope, name, entry);
+          const inspection = await this.inspectEntry(scope, name, entry);
+          problems.push(...this.approvalProblems(name, scope, inspection));
+          const report = inspection.verify;
           for (const target of report.targets) {
             if (target.ok) continue;
             const allMissing = target.files.every((f) => f.status === 'missing');

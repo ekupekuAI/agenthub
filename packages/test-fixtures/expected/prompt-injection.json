@@ -1,1 +1,5 @@
-{ "outcome": "confirm", "ruleIds": ["prompt.injection"] }
+{
+  "outcome": "confirm",
+  "ruleIds": ["prompt.injection"],
+  "externals": []
+}

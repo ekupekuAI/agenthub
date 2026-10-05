@@ -1,1 +1,5 @@
-{ "outcome": "allow", "ruleIds": [] }
+{
+  "outcome": "allow",
+  "ruleIds": [],
+  "externals": []
+}

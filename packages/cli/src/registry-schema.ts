@@ -6,14 +6,23 @@
  */
 import type {
   AgentId,
+  CapabilitySet,
   EvaluatedFinding,
+  ExternalRef,
   RegistryVersion,
   SearchResult,
   SkillInfo,
   SkillInfoVersion,
   SkillManifest,
+  VersionCapabilities,
 } from '@agenthub/core';
-import { AGENT_IDS } from '@agenthub/core';
+import {
+  AGENT_IDS,
+  CAPABILITY_KEYS,
+  EXTERNAL_KINDS,
+  EXTERNAL_PINS,
+  EXTERNAL_ROLES,
+} from '@agenthub/core';
 
 const SLUG = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 const SEMVER =
@@ -173,6 +182,44 @@ function parseFinding(value: unknown): EvaluatedFinding {
   return finding;
 }
 
+function tokenList(value: unknown, what: string): string[] {
+  return list(value ?? [], what, 1024).map((item) => str(item, what, 256));
+}
+
+function parseExternal(value: unknown): ExternalRef {
+  const raw = record(value, 'external');
+  const out: ExternalRef = {
+    kind: oneOf(raw.kind, EXTERNAL_KINDS, 'external kind'),
+    id: str(raw.id, 'external id', 512),
+    pin: oneOf(raw.pin, EXTERNAL_PINS, 'external pin'),
+    pinValue: present(raw.pinValue) ? str(raw.pinValue, 'external pin value', 128) : null,
+    role: oneOf(raw.role, EXTERNAL_ROLES, 'external role'),
+  };
+  assign(out, 'host', optStr(raw.host, 'external host', 255));
+  return out;
+}
+
+/** Capabilities reported by the registry: display only, never used for a gate. */
+function parseCapabilities(value: unknown): VersionCapabilities {
+  const raw = record(value, 'capabilities');
+  const setRaw = record(raw.set, 'capability set');
+  const set = {
+    externals: list(setRaw.externals ?? [], 'externals', 256).map(parseExternal),
+  } as CapabilitySet;
+  for (const key of CAPABILITY_KEYS) set[key] = tokenList(setRaw[key], `capabilities.${key}`);
+  const digest = str(raw.digest, 'capability digest');
+  const rulesetDigest = str(raw.rulesetDigest, 'ruleset digest');
+  if (!DIGEST.test(digest) || !DIGEST.test(rulesetDigest))
+    throw new MalformedError('capability digest');
+  return {
+    set,
+    digest,
+    rulesetDigest,
+    undeclared: tokenList(raw.undeclared, 'undeclared capabilities'),
+    unobserved: tokenList(raw.unobserved, 'unobserved capabilities'),
+  };
+}
+
 function parseInfoVersion(value: unknown): SkillInfoVersion {
   const raw = record(value, 'version entry');
   const out: SkillInfoVersion = parseRegistryVersion(raw);
@@ -199,6 +246,8 @@ function parseInfoVersion(value: unknown): SkillInfoVersion {
   }
   if (present(raw.releaseNotes))
     out.releaseNotes = str(raw.releaseNotes, 'release notes', LIMITS.notes);
+  if (present(raw.capabilities)) out.capabilities = parseCapabilities(raw.capabilities);
+  if (present(raw.skillMdLines)) out.skillMdLines = count(raw.skillMdLines, 'SKILL.md lines');
   return out;
 }
 

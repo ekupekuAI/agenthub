@@ -1,0 +1,6 @@
+{
+  "mcpServers": {
+    "docs": { "url": "https://mcp.example.invalid/sse" },
+    "local": { "command": "uvx", "args": ["docs-mcp-server==1.4.2"] }
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "outcome": "block",
+  "ruleIds": ["ext.remote-instructions"],
+  "externals": [
+    "url:https://docs.example.invalid reference unpinned",
+    "url:https://rules.example.invalid/release-notes/rules.md instructions unpinned"
+  ]
+}

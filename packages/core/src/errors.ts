@@ -2,6 +2,7 @@ export type ErrorCode =
   | 'USAGE'
   | 'VALIDATION'
   | 'POLICY_BLOCKED'
+  | 'APPROVAL_REQUIRED'
   | 'INTEGRITY'
   | 'DRIFT'
   | 'INCOMPATIBLE'
@@ -17,6 +18,8 @@ export const EXIT_CODES: Record<ErrorCode, number> = {
   USAGE: 2,
   VALIDATION: 1,
   POLICY_BLOCKED: 3,
+  /** An update can do more than the approved version, and no capability approval was given. */
+  APPROVAL_REQUIRED: 3,
   INTEGRITY: 4,
   DRIFT: 4,
   INCOMPATIBLE: 5,

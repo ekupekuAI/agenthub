@@ -1,6 +1,7 @@
 import type { Finding, ScanResult } from '@agenthub/core';
 import { stripBatchComments, stripPowerShellComments, stripShellComments } from './comments';
 import { FileScan } from './context';
+import { extractFileExternals, type FileExternals, finishExternals } from './externals';
 import { analyzeBinary } from './lang/binary';
 import { analyzeEncoded } from './lang/encoded';
 import { analyzeJavaScript } from './lang/javascript';
@@ -9,9 +10,10 @@ import { analyzeMarkdown } from './lang/markdown';
 import { analyzeProse } from './lang/prose';
 import { analyzePython } from './lang/python';
 import { analyzeShell, type Dialect } from './lang/shell';
+import { RULESET_DIGEST, SCANNER_VERSION } from './ruleset';
 import { decodeText, splitLines } from './text';
 
-export const SCANNER_VERSION = '1.0.0';
+export { RULESET_DIGEST, SCANNER_VERSION } from './ruleset';
 
 export interface ScanFile {
   /** POSIX path relative to the skill root. */
@@ -48,7 +50,12 @@ const STRIP: Record<Dialect, (text: string) => string> = {
   bat: stripBatchComments,
 };
 
-function scanFile(file: ScanFile, packagePaths: ReadonlySet<string>): Finding[] {
+interface FileResult {
+  findings: Finding[];
+  externals: FileExternals | null;
+}
+
+function scanFile(file: ScanFile, packagePaths: ReadonlySet<string>): FileResult {
   let text: string | null = null;
   if (file.kind !== 'binary') {
     text = decodeText(file.content);
@@ -57,7 +64,7 @@ function scanFile(file: ScanFile, packagePaths: ReadonlySet<string>): Finding[] 
   if (text === null) {
     const scan = new FileScan(file.path, [], packagePaths);
     analyzeBinary(scan, file.content);
-    return scan.toFindings();
+    return { findings: scan.toFindings(), externals: null };
   }
 
   text = text.replace(/\r\n/g, '\n');
@@ -93,7 +100,10 @@ function scanFile(file: ScanFile, packagePaths: ReadonlySet<string>): Finding[] 
     comments: language === 'markdown' || language === 'text',
     code: language !== 'markdown' && language !== 'text',
   });
-  return scan.toFindings();
+  return {
+    findings: scan.toFindings(),
+    externals: extractFileExternals(file.path, text, language),
+  };
 }
 
 function compareFindings(a: Finding, b: Finding): number {
@@ -106,11 +116,26 @@ function compareFindings(a: Finding, b: Finding): number {
 }
 
 /**
- * Scans a skill's files and reports what it finds. Pure: it reads only the given bytes and
- * never executes, imports or fetches anything. It never claims a skill is safe.
+ * Scans a skill's files and reports what it finds, with its outbound references. Pure: it reads
+ * only the given bytes and never executes, imports or fetches anything. It never claims a skill
+ * is safe.
  */
 export function scanPackage(files: readonly ScanFile[]): ScanResult {
   const packagePaths = new Set(files.map((f) => f.path));
-  const findings = files.flatMap((f) => scanFile(f, packagePaths)).sort(compareFindings);
-  return { scannerVersion: SCANNER_VERSION, findings };
+  const results = files.map((f) => ({ path: f.path, result: scanFile(f, packagePaths) }));
+  const extracted = finishExternals(
+    results.flatMap(({ path, result }) =>
+      result.externals === null ? [] : [{ path, result: result.externals }],
+    ),
+  );
+  const findings = [
+    ...results.flatMap(({ result }) => result.findings),
+    ...extracted.findings,
+  ].sort(compareFindings);
+  return {
+    scannerVersion: SCANNER_VERSION,
+    rulesetDigest: RULESET_DIGEST,
+    findings,
+    externals: extracted.externals,
+  };
 }

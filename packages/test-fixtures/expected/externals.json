@@ -1,0 +1,14 @@
+{
+  "outcome": "confirm",
+  "ruleIds": ["deps.remote", "exec.shell", "net.access"],
+  "externals": [
+    "git:git.example.invalid/acme/templates install unpinned",
+    "mcp:https://mcp.example.invalid/sse run unpinned",
+    "npm:openapi-client-gen run unpinned latest",
+    "pypi:black install sha256 eaca8e85b1a2f75cc8b0f549258f2d9bda1f518cfccc993110a6545989c99b5d",
+    "pypi:docs-mcp-server run version 1.4.2",
+    "pypi:requests install unpinned",
+    "url:https://docs.example.invalid reference unpinned",
+    "url:https://schemas.example.invalid/openapi/3.1/schema.json fetch unpinned"
+  ]
+}

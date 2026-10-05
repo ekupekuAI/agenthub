@@ -4,7 +4,9 @@
 
 import { AgentHubError } from '@agenthub/core';
 import { Command, CommanderError, Option } from 'commander';
+import { approveCommand } from './commands/approve';
 import { configCommand } from './commands/config';
+import { diffCommand } from './commands/diff';
 import { doctorCommand } from './commands/doctor';
 import { infoCommand } from './commands/info';
 import { installCommand } from './commands/install';
@@ -30,7 +32,16 @@ export const VERSION: string =
  * running. Read-only commands, --dry-run and `update --check` leave journals alone; doctor
  * reports them.
  */
-const NO_RECOVER = new Set(['pack', 'config', 'doctor', 'list', 'verify', 'search', 'info']);
+const NO_RECOVER = new Set([
+  'pack',
+  'config',
+  'doctor',
+  'list',
+  'verify',
+  'search',
+  'info',
+  'diff',
+]);
 
 export function recoversFirst(
   command: string,
@@ -53,6 +64,8 @@ const COMMANDS = new Set([
   'info',
   'update',
   'rollback',
+  'diff',
+  'approve',
 ]);
 
 const HELP_EPILOG = `
@@ -66,7 +79,8 @@ Environment:
   NO_COLOR             disable colors (same as --no-color)
 
 Exit codes:
-  0 ok · 1 error or problems found · 2 usage · 3 blocked by policy
+  0 ok · 1 error or problems found · 2 usage
+  3 blocked by policy, or new capabilities need approval (--approve-capabilities)
   4 integrity or drift · 5 incompatible · 130 cancelled
 
 Examples:
@@ -74,6 +88,8 @@ Examples:
   agenthub install ./my-skill
   agenthub install web-testing@^1.2 --dry-run
   agenthub update --check
+  agenthub diff web-testing
+  agenthub update web-testing --approve-capabilities
   agenthub config trust-registry   (let this project's config choose the registry)
   agenthub verify --json
   agenthub --version`;
@@ -227,9 +243,16 @@ export function buildProgram(runtime: Runtime, state: RunState): Command {
       'install a skill folder, a .skillpkg or name[@range]; no argument restores the lock',
     )
     .argument('[target]', 'folder, .skillpkg file, or name[@range] from the registry')
+    .option(
+      '--approve-capabilities',
+      'approve capabilities the installed version did not have (--yes alone never does)',
+    )
     .action(
-      action('install', ((ctx: CommandContext, target: string | undefined) =>
-        installCommand(ctx, target)) as Handler),
+      action('install', ((
+        ctx: CommandContext,
+        target: string | undefined,
+        opts: { approveCapabilities?: boolean },
+      ) => installCommand(ctx, target, opts)) as Handler),
     );
 
   program
@@ -306,13 +329,42 @@ in that project (recorded in your user config).`,
     .description('update installed skills (--check shows updates without changing anything)')
     .argument('[name]', 'skill name (default: every installed skill)')
     .option('--check', 'only show available updates; never writes')
-    .option('--safe', 'apply only updates with no blockers and no warnings; skip the rest')
+    .option(
+      '--safe',
+      'apply only updates with no capability expansion, a valid approval and no worse policy outcome; skip the rest',
+    )
+    .option(
+      '--approve-capabilities',
+      'approve capabilities beyond the approved version (--yes alone never does)',
+    )
     .action(
       action('update', ((
         ctx: CommandContext,
         name: string | undefined,
-        opts: { check?: boolean; safe?: boolean },
+        opts: { check?: boolean; safe?: boolean; approveCapabilities?: boolean },
       ) => updateCommand(ctx, name, opts)) as Handler),
+    );
+
+  program
+    .command('diff')
+    .description(
+      'capability and file changes between the installed version and a registry version (read-only)',
+    )
+    .argument('<name>', 'skill name')
+    .option('--to <version>', 'compare with this version (default: the update candidate)')
+    .action(
+      action('diff', ((ctx: CommandContext, name: string, opts: { to?: string }) =>
+        diffCommand(ctx, name, opts)) as Handler),
+    );
+
+  program
+    .command('approve')
+    .description("record that you reviewed the installed version's capability inventory")
+    .argument('<name>', 'skill name')
+    .option('--note <text>', 'why it was approved (stored in the lock)')
+    .action(
+      action('approve', ((ctx: CommandContext, name: string, opts: { note?: string }) =>
+        approveCommand(ctx, name, opts)) as Handler),
     );
 
   program
