@@ -28,8 +28,9 @@ export interface DecisionBadgeProps {
 /** Finding decision (INFO / WARN / BLOCK) or install decision (ALLOW / CONFIRM). */
 export function DecisionBadge({ decision, count, className }: DecisionBadgeProps) {
   const { tone, icon } = DECISIONS[decision];
+  // A zero count carries no risk, so it is shown neutral rather than in the decision's color.
   return (
-    <Badge tone={tone} icon={icon} mono className={className}>
+    <Badge tone={count === 0 ? 'neutral' : tone} icon={icon} mono className={className}>
       {count === undefined ? decision : `${count} ${decision}`}
     </Badge>
   );
