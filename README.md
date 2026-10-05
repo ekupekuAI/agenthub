@@ -66,6 +66,7 @@ docs/                     guides, PRD, design spec
 - [Security model](docs/security.md)
 - [Running the registry](docs/registry.md)
 - [Troubleshooting](docs/troubleshooting.md)
+- [Completion report](docs/COMPLETION_REPORT.md)
 - [Design spec](docs/specs/2026-10-04-agenthub-mvp-design.md)
 
 ## Development
