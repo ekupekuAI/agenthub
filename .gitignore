@@ -13,3 +13,6 @@ playwright-report/
 
 .vercel
 .env*
+
+# npm release staging (packages/cli/scripts/prepare-release.mjs)
+packages/cli/release/

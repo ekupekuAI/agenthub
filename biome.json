@@ -11,7 +11,9 @@
       "!packages/test-fixtures/fixtures",
       "!**/next-env.d.ts",
       "!**/test-results",
-      "!**/playwright-report"
+      "!**/playwright-report",
+      "!packages/cli/release",
+      "!.vercel"
     ]
   },
   "formatter": { "indentStyle": "space", "indentWidth": 2, "lineWidth": 100 },

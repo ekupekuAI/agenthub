@@ -21,6 +21,7 @@ import { verifyCommand } from './commands/verify';
 import { CommandContext, type CommandResult, type GlobalOptions, type Runtime } from './context';
 import { exitCodeFor, Output } from './output';
 import { launchTui, tuiRequest } from './tui/launch';
+import { DEFAULT_REGISTRY } from './wiring';
 
 declare const __AGENTHUB_VERSION__: string | undefined;
 
@@ -72,7 +73,12 @@ const COMMANDS = new Set([
 const HELP_EPILOG = `
 Environment:
   AGENTHUB_HOME        machine-local state folder (default: ~/.agenthub)
-  AGENTHUB_REGISTRY    registry to use: https://… or file:<folder> (overrides config)
+  AGENTHUB_REGISTRY    registry to use: https://… or file:<folder> (overrides config)${
+    DEFAULT_REGISTRY === undefined
+      ? ''
+      : `
+                       default when none is configured: ${DEFAULT_REGISTRY}`
+  }
   AGENTHUB_CHANNEL     release channel: stable or beta (overrides config)
   AGENTHUB_USER_HOME   home folder used for the user scope (default: your home folder)
   AGENTHUB_AGENTS      testing and CI only: replaces agent detection with a list,

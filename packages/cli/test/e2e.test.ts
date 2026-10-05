@@ -12,9 +12,21 @@ import { fixturePath, versionFixturePath } from '@agenthub/test-fixtures';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 const repoRoot = fileURLToPath(new URL('../../../', import.meta.url));
-/** AGENTHUB_E2E_BIN runs the suite against an already built binary (skips the build). */
+/**
+ * AGENTHUB_E2E_BIN runs the suite against an already built binary (skips the build); build it
+ * with AGENTHUB_DEFAULT_REGISTRY=none so that it has no built-in registry.
+ */
 const prebuilt = process.env.AGENTHUB_E2E_BIN;
-const bin = prebuilt ?? join(repoRoot, 'packages', 'cli', 'dist', 'agenthub.mjs');
+let bin: string;
+
+/** Builds the CLI into `outfile` with the given built-in default registry ("none" for none). */
+function buildCli(outfile: string, defaultRegistry: string): void {
+  execFileSync(
+    process.execPath,
+    [join(repoRoot, 'packages', 'cli', 'build.mjs'), '--outfile', outfile],
+    { stdio: 'pipe', env: { ...process.env, AGENTHUB_DEFAULT_REGISTRY: defaultRegistry } },
+  );
+}
 
 let base: string;
 let stateDir: string;
@@ -28,7 +40,12 @@ interface CliResult {
   json(): any;
 }
 
-function cli(cwd: string, args: string[], extraEnv: Record<string, string> = {}): CliResult {
+function cli(
+  cwd: string,
+  args: string[],
+  extraEnv: Record<string, string> = {},
+  binary: string = bin,
+): CliResult {
   const env: Record<string, string | undefined> = {
     ...process.env,
     AGENTHUB_HOME: stateDir,
@@ -39,7 +56,7 @@ function cli(cwd: string, args: string[], extraEnv: Record<string, string> = {})
   delete env.AGENTHUB_REGISTRY;
   delete env.AGENTHUB_CHANNEL;
   Object.assign(env, extraEnv);
-  const result = spawnSync(process.execPath, [bin, ...args], {
+  const result = spawnSync(process.execPath, [binary, ...args], {
     cwd,
     env,
     encoding: 'utf8',
@@ -73,12 +90,14 @@ async function readLock(project: string): Promise<{ skills: Record<string, { ver
 }
 
 beforeAll(async () => {
-  if (prebuilt === undefined) {
-    execFileSync(process.execPath, [join(repoRoot, 'packages', 'cli', 'build.mjs')], {
-      stdio: 'pipe',
-    });
-  }
   base = await mkdtemp(join(tmpdir(), 'agenthub-e2e-'));
+  if (prebuilt === undefined) {
+    // A test build: no built-in registry, and dist/ is left alone.
+    bin = join(base, 'bin', 'agenthub.mjs');
+    buildCli(bin, 'none');
+  } else {
+    bin = prebuilt;
+  }
   stateDir = join(base, 'state');
   homeDir = join(base, 'home');
   await mkdir(homeDir, { recursive: true });
@@ -332,6 +351,63 @@ describe('agenthub CLI (built)', () => {
       expect(info.code, info.stderr).toBe(0);
       expect(info.stdout).toContain('1.1.0');
       expect(info.stdout).toContain('revoked');
+    });
+  });
+
+  describe('built-in default registry', () => {
+    let withDefault: string;
+    let fallback: string;
+    let project: string;
+
+    beforeAll(async () => {
+      fallback = join(base, 'default-registry');
+      await mkdir(fallback, { recursive: true });
+      withDefault = join(base, 'bin-default', 'agenthub.mjs');
+      buildCli(withDefault, `file:${fallback}`);
+      project = await newProject('default-registry-project');
+      const out = join(fallback, 'web-testing-1.0.0.skillpkg');
+      const packed = cli(project, ['pack', fixturePath('web-testing'), '-o', out]);
+      expect(packed.code, packed.stderr).toBe(0);
+    }, 120_000);
+
+    it('is used, with source "default", when nothing else sets a registry', () => {
+      const get = cli(project, ['config', 'get', 'registry', '--json'], {}, withDefault);
+      expect(get.code, get.stdout + get.stderr).toBe(0);
+      expect(get.json().data).toMatchObject({ value: `file:${fallback}`, source: 'default' });
+      const all = cli(project, ['config'], {}, withDefault);
+      expect(all.stdout).toMatch(/registry\s+file:.*\(default\)/);
+      const doctor = cli(project, ['doctor', '--json'], {}, withDefault);
+      expect(doctor.json().data.registry).toEqual({ url: `file:${fallback}`, source: 'default' });
+      expect(cli(project, ['doctor'], {}, withDefault).stdout).toContain('(default)');
+      const search = cli(project, ['search', 'web', '--json'], {}, withDefault);
+      expect(search.code, search.stdout + search.stderr).toBe(0);
+      expect(search.json().data.results[0].name).toBe('web-testing');
+    });
+
+    it('a configured registry always wins over the default', async () => {
+      const other = join(base, 'other-registry');
+      await mkdir(other, { recursive: true });
+      const env = { AGENTHUB_REGISTRY: `file:${other}` };
+      const get = cli(project, ['config', 'get', 'registry', '--json'], env, withDefault);
+      expect(get.json().data).toMatchObject({ value: `file:${other}`, source: 'env' });
+      const search = cli(project, ['search', 'web', '--json'], env, withDefault);
+      expect(search.code, search.stdout + search.stderr).toBe(0);
+      expect(search.json().data.results).toEqual([]);
+    });
+
+    it('an untrusted project registry stays ignored; the default applies', async () => {
+      const repo = await newProject('default-untrusted');
+      await mkdir(join(repo, 'reg'), { recursive: true });
+      const set = cli(repo, ['config', 'set', 'registry', 'file:./reg', '--json'], {}, withDefault);
+      expect(set.code, set.stdout + set.stderr).toBe(0);
+      const get = cli(repo, ['config', 'get', 'registry', '--json'], {}, withDefault);
+      expect(get.json().data).toMatchObject({ value: `file:${fallback}`, source: 'default' });
+    });
+
+    it('a test build has no default registry', async () => {
+      const bare = await newProject('no-default');
+      const get = cli(bare, ['config', 'get', 'registry', '--json']);
+      expect(get.json().data).toMatchObject({ value: null, source: 'default' });
     });
   });
 

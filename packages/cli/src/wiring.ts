@@ -46,6 +46,18 @@ import { HttpRegistry } from './http-registry';
 
 export type LoadedConfig = Awaited<ReturnType<typeof loadConfig>>;
 
+/** Replaced at build time (build.mjs, from AGENTHUB_DEFAULT_REGISTRY); absent in dev and tests. */
+declare const __AGENTHUB_DEFAULT_REGISTRY__: string | undefined;
+
+/**
+ * The registry used when none is configured anywhere (flags, environment, project or user
+ * config). Release builds bake in the public registry; dev and test builds have none.
+ */
+export const DEFAULT_REGISTRY: string | undefined =
+  typeof __AGENTHUB_DEFAULT_REGISTRY__ === 'string' && __AGENTHUB_DEFAULT_REGISTRY__.trim() !== ''
+    ? __AGENTHUB_DEFAULT_REGISTRY__.trim()
+    : undefined;
+
 export interface Paths {
   home: string;
   agenthubHome: string;
@@ -556,11 +568,32 @@ export interface WiringOptions {
   flags?: Partial<AgentHubConfig>;
   /** -g: user-scope command; a project's config never chooses its registry. */
   global?: boolean;
+  /**
+   * The registry used when none is configured; undefined uses the built-in DEFAULT_REGISTRY,
+   * null means none (tests).
+   */
+  defaultRegistry?: string | null;
+}
+
+/**
+ * Fills in the built-in default registry (source "default") when no layer sets one. Any
+ * configured registry wins; an untrusted project registry stays ignored either way.
+ */
+export function withDefaultRegistry(
+  config: LoadedConfig,
+  defaultRegistry: string | undefined,
+): LoadedConfig {
+  if (defaultRegistry === undefined || config.effective.registry !== undefined) return config;
+  return {
+    ...config,
+    effective: { ...config.effective, registry: defaultRegistry },
+    sources: { ...config.sources, registry: 'default' },
+  };
 }
 
 export async function loadEffectiveConfig(opts: WiringOptions): Promise<LoadedConfig> {
   const paths = resolvePaths(opts.env);
-  return loadConfig({
+  const config = await loadConfig({
     cwd: opts.cwd,
     home: paths.home,
     agenthubHome: paths.agenthubHome,
@@ -569,6 +602,9 @@ export async function loadEffectiveConfig(opts: WiringOptions): Promise<LoadedCo
     // -g: a repository's config never applies to user-scope operations.
     ...(opts.global === true ? { scope: 'user' as const } : {}),
   });
+  const fallback =
+    opts.defaultRegistry === undefined ? DEFAULT_REGISTRY : (opts.defaultRegistry ?? undefined);
+  return withDefaultRegistry(config, fallback);
 }
 
 /**

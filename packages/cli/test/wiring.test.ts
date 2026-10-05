@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -12,10 +12,14 @@ import {
   adjustUnknownRequirements,
   createRegistry,
   createRequirementProbe,
+  createWiring,
+  DEFAULT_REGISTRY,
   firstVersionToken,
+  loadEffectiveConfig,
   neutralProbeCwd,
   parseAgentsEnv,
   resolvePaths,
+  withDefaultRegistry,
 } from '../src/wiring';
 
 describe('AGENTHUB_AGENTS', () => {
@@ -300,5 +304,120 @@ describe('plan checks', () => {
     expect(addClaudeRelocationWarning(userPlan(['cursor']), moved).issues).toEqual([]);
     const project = { ...userPlan(['claude-code']), scope: 'project' } as InstallPlan;
     expect(addClaudeRelocationWarning(project, moved).issues).toEqual([]);
+  });
+});
+
+describe('default registry', () => {
+  const PUBLIC = 'https://registry.example.com';
+
+  /** A project (with .git) and private AGENTHUB_HOME / user home folders. */
+  async function world(): Promise<{
+    base: string;
+    project: string;
+    env: Record<string, string | undefined>;
+  }> {
+    const base = await mkdtemp(join(tmpdir(), 'agenthub-default-registry-'));
+    const project = join(base, 'project');
+    await mkdir(join(project, '.git'), { recursive: true });
+    await mkdir(join(base, 'home'), { recursive: true });
+    const env = {
+      AGENTHUB_HOME: join(base, 'state'),
+      AGENTHUB_USER_HOME: join(base, 'home'),
+      AGENTHUB_AGENTS: 'claude-code',
+    };
+    return { base, project, env };
+  }
+
+  it('has no built-in default in dev and test builds', () => {
+    expect(DEFAULT_REGISTRY).toBeUndefined();
+  });
+
+  it('is used with source "default" when nothing configures a registry', async () => {
+    const { base, project, env } = await world();
+    try {
+      const config = await loadEffectiveConfig({ cwd: project, env, defaultRegistry: PUBLIC });
+      expect(config.effective.registry).toBe(PUBLIC);
+      expect(config.sources.registry).toBe('default');
+      const wiring = await createWiring({ cwd: project, env, defaultRegistry: PUBLIC });
+      expect(wiring.registry?.id).toBe(PUBLIC);
+      expect(wiring.registrySource).toBe('default');
+      expect(wiring.registryError).toBeUndefined();
+      // No default: no registry at all.
+      const none = await createWiring({ cwd: project, env, defaultRegistry: null });
+      expect(none.registry).toBeNull();
+      expect(none.registrySource).toBeUndefined();
+      const built = await createWiring({ cwd: project, env });
+      expect(built.registry).toBeNull();
+    } finally {
+      await rm(base, { recursive: true, force: true });
+    }
+  });
+
+  it('loses to any configured registry', async () => {
+    const { base, project, env } = await world();
+    try {
+      const fromEnv = await loadEffectiveConfig({
+        cwd: project,
+        env: { ...env, AGENTHUB_REGISTRY: 'https://env.example.com' },
+        defaultRegistry: PUBLIC,
+      });
+      expect(fromEnv.effective.registry).toBe('https://env.example.com');
+      expect(fromEnv.sources.registry).toBe('env');
+
+      const fromFlag = await loadEffectiveConfig({
+        cwd: project,
+        env,
+        flags: { registry: 'https://flag.example.com' },
+        defaultRegistry: PUBLIC,
+      });
+      expect(fromFlag.sources.registry).toBe('flag');
+
+      await mkdir(env.AGENTHUB_HOME as string, { recursive: true });
+      await writeFile(
+        join(env.AGENTHUB_HOME as string, 'config.json'),
+        JSON.stringify({ registry: 'https://user.example.com' }),
+      );
+      const fromUser = await createWiring({ cwd: project, env, defaultRegistry: PUBLIC });
+      expect(fromUser.registry?.id).toBe('https://user.example.com');
+      expect(fromUser.registrySource).toBe('user');
+    } finally {
+      await rm(base, { recursive: true, force: true });
+    }
+  });
+
+  it('never lets an untrusted project registry replace it', async () => {
+    const { base, project, env } = await world();
+    try {
+      await mkdir(join(project, '.agenthub', 'reg'), { recursive: true });
+      await writeFile(
+        join(project, '.agenthub', 'config.json'),
+        JSON.stringify({ registry: 'file:./reg' }),
+      );
+      const config = await loadEffectiveConfig({ cwd: project, env, defaultRegistry: PUBLIC });
+      expect(config.effective.registry).toBe(PUBLIC);
+      expect(config.sources.registry).toBe('default');
+      expect(config.ignoredProjectRegistry).toBe('file:./reg');
+      expect(config.warnings?.join(' ')).toContain('ignoring "registry"');
+      const wiring = await createWiring({ cwd: project, env, defaultRegistry: PUBLIC });
+      expect(wiring.registry?.id).toBe(PUBLIC);
+      expect(wiring.registrySource).toBe('default');
+    } finally {
+      await rm(base, { recursive: true, force: true });
+    }
+  });
+
+  it('leaves a configured registry untouched', () => {
+    const loaded = {
+      effective: { registry: 'file:/somewhere' },
+      sources: { registry: 'user' as const },
+      projectRoot: null,
+      userConfigPath: '/u/config.json',
+      projectConfigPath: null,
+      warnings: [],
+    };
+    expect(withDefaultRegistry(loaded, PUBLIC)).toBe(loaded);
+    expect(
+      withDefaultRegistry({ ...loaded, effective: {}, sources: {} }, undefined).effective,
+    ).toEqual({});
   });
 });

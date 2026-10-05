@@ -19,6 +19,7 @@ import { loadSkillFromDir, packSkill } from '@agenthub/core';
 // first and give each address family more time.
 dns.setDefaultResultOrder('ipv4first');
 net.setDefaultAutoSelectFamilyAttemptTimeout(3000);
+
 import { blobToken, databaseUrl, dataDir } from '../src/config';
 import { describeDatabaseUrl, getDatabase } from '../src/db/client';
 import { isApiError } from '../src/lib/errors';

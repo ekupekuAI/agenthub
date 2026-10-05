@@ -153,7 +153,10 @@ export function buildChecks(view: DoctorView): Check[] {
     },
     {
       title: 'Registry and config',
-      summary: view.registry === null ? 'no registry configured' : safe(view.registry),
+      summary:
+        view.registry === null
+          ? 'no registry configured'
+          : `${safe(view.registry)}${view.registrySource === undefined ? '' : ` (${view.registrySource})`}`,
       level:
         view.registry === null && configProblems.length === 0 ? 'info' : levelOf(configProblems),
       details: [

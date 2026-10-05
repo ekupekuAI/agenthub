@@ -88,6 +88,8 @@ export interface DoctorView {
   report: DoctorReport | null;
   problems: DoctorProblem[];
   registry: string | null;
+  /** Where the registry setting came from ("default" for the built-in registry). */
+  registrySource?: string;
   home: string;
 }
 
@@ -437,6 +439,9 @@ export class Session {
       report,
       problems,
       registry: wiring.config.effective.registry ?? null,
+      ...(wiring.config.sources.registry === undefined
+        ? {}
+        : { registrySource: wiring.config.sources.registry }),
       home: wiring.paths.home,
     };
   }

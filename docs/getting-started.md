@@ -5,18 +5,25 @@ rolled back. You don't need to know how Agent Skills work internally.
 
 ## 1. Install and check your machine
 
-agenthub needs Node.js 22 or newer.
+agenthub needs Node.js 22 or newer. Install it from npm (the package is
+`@ekupekuai/agenthub`; the command is `agenthub`):
+
+```bash
+npm install -g @ekupekuai/agenthub
+agenthub doctor
+```
+
+Or run it without installing: `npx @ekupekuai/agenthub doctor`.
+
+To work from a checkout of this repository instead:
 
 ```bash
 npm install
 npm run build
+node packages/cli/dist/agenthub.mjs doctor
 ```
 
-The examples below use `agenthub` for `node packages/cli/dist/agenthub.mjs`.
-
-```bash
-agenthub doctor
-```
+The examples below use `agenthub` for either.
 
 `doctor` changes nothing. It lists the agents it found (Claude Code, Codex, Cursor,
 VS Code + Copilot), how confident it is about each, the folders each one reads skills from,
@@ -24,12 +31,22 @@ and any problems with existing installs.
 
 ## 2. Choose where skills come from
 
-Point agenthub at a registry. This can be a hosted registry or a folder of `.skillpkg` files.
+The npm package uses the public registry at <https://agenthub-registry.vercel.app> when no
+registry is configured; `agenthub config` and `agenthub doctor` show it with the source
+`default`. A build from a checkout has the same default (build with
+`AGENTHUB_DEFAULT_REGISTRY=none` for none). To use another registry (a hosted one or a folder
+of `.skillpkg` files):
 
 ```bash
-agenthub config set registry http://localhost:3000     # the registry from this repo
-agenthub config set registry file:../my-skills         # a local folder
+agenthub config set registry https://registry.example.com -g   # a hosted registry
+agenthub config set registry http://localhost:3000             # the registry from this repo
+agenthub config set registry file:../my-skills                 # a local folder
 ```
+
+A registry you configure (`AGENTHUB_REGISTRY`, your user config, or a project config you
+trusted) always wins over the default. A registry in a project's config is ignored until you
+trust it with `agenthub config trust-registry`, so a cloned repository cannot choose where
+packages come from.
 
 You can also skip the registry and install straight from a folder or a package file.
 

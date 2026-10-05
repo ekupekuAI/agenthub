@@ -49,8 +49,10 @@ export async function doctorCommand(ctx: CommandContext): Promise<CommandResult>
     ctx.out.print(s.dim('  (not inside a project: installs default to the user scope)'));
   }
   ctx.out.print(`  cache    ${formatBytes(report.cacheBytes)}`);
-  if (wiring.config.effective.registry !== undefined) {
-    ctx.out.print(`  registry ${clean(wiring.config.effective.registry)}`);
+  const registry = wiring.config.effective.registry;
+  const registrySource = wiring.config.sources.registry ?? 'default';
+  if (registry !== undefined) {
+    ctx.out.print(`  registry ${clean(registry)}  ${s.dim(`(${registrySource})`)}`);
   }
   if (report.pendingJournals.length > 0) {
     ctx.out.print();
@@ -74,5 +76,12 @@ export async function doctorCommand(ctx: CommandContext): Promise<CommandResult>
     ctx.out.print(`  ${label} ${clean(problem.code)}: ${clean(problem.message)}`);
   }
   const errors = problems.filter((problem) => problem.level === 'error').length;
-  return { data: { ...report, problems }, exitCode: errors > 0 ? 1 : 0 };
+  return {
+    data: {
+      ...report,
+      registry: registry === undefined ? null : { url: registry, source: registrySource },
+      problems,
+    },
+    exitCode: errors > 0 ? 1 : 0,
+  };
 }
