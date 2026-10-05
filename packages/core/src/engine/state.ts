@@ -4,6 +4,7 @@
  */
 import { createHash } from 'node:crypto';
 import { lstatSync, realpathSync, statSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { AgentHubError } from '../errors';
 import type { Scope } from '../types';
@@ -50,17 +51,23 @@ export function findProjectRoot(
   opts: { home?: string; agenthubHome?: string } = {},
 ): string | null {
   const start = path.resolve(cwd);
+  // The real OS home is never a project either, even when AGENTHUB_USER_HOME/AGENTHUB_HOME
+  // point elsewhere. Otherwise a folder under home without .git resolves to home, and project
+  // installs land in the user's global agent folders (~/.claude/skills, ~/.agents/skills).
+  const osHome = os.homedir();
+  const isHome = (dir: string) =>
+    samePath(dir, osHome) || (opts.home !== undefined && samePath(dir, opts.home));
   for (let current = start; ; current = path.dirname(current)) {
     const candidate = path.join(current, STATE_DIR);
     const isMachineState =
       (opts.agenthubHome !== undefined && samePath(candidate, opts.agenthubHome)) ||
-      (opts.home !== undefined && samePath(current, opts.home));
+      isHome(current);
     if (!isMachineState && isDir(candidate)) return current;
     if (path.dirname(current) === current) break;
   }
   for (let current = start; ; current = path.dirname(current)) {
     const isMachineState =
-      (opts.home !== undefined && samePath(current, opts.home)) ||
+      isHome(current) ||
       (opts.agenthubHome !== undefined &&
         samePath(path.join(current, STATE_DIR), opts.agenthubHome));
     if (!isMachineState && existsSync(path.join(current, '.git'))) return current;

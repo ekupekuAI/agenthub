@@ -6,7 +6,7 @@
 import { type ChildProcess, spawn, spawnSync } from 'node:child_process';
 import { lstatSync } from 'node:fs';
 import { cp, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
-import { hostname, tmpdir } from 'node:os';
+import os, { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   AGENT_PATHS,
@@ -16,7 +16,7 @@ import {
   PATH_TABLE_VERSION,
   selectTargetFolders,
 } from '@agenthub/adapters';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { resolvesWithin } from '../src/engine/fsutil';
 import {
   AGENT_IDS,
@@ -1037,6 +1037,23 @@ describe('home directory', () => {
     expect(() =>
       scopeStateDir('project', { projectRoot: home, home, agenthubHome: userState }),
     ).toThrow(/machine state folder/);
+  });
+
+  it('never resolves the real OS home as a project, even when home and state are overridden', async () => {
+    // A folder under the real home (e.g. %TEMP%) without .git, while the real home holds
+    // ~/.agenthub from earlier use and AGENTHUB_USER_HOME / AGENTHUB_HOME point elsewhere.
+    const realHome = join(base, 'real-home');
+    const work = join(realHome, 'AppData', 'Local', 'Temp', 'job');
+    await mkdir(join(realHome, '.agenthub'), { recursive: true });
+    await mkdir(work, { recursive: true });
+    const spy = vi.spyOn(os, 'homedir').mockReturnValue(realHome);
+    try {
+      expect(findProjectRoot(work, { home, agenthubHome: join(home, '.agenthub') })).toBeNull();
+      await mkdir(join(realHome, '.git'));
+      expect(findProjectRoot(work, { home, agenthubHome: join(home, '.agenthub') })).toBeNull();
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
 
