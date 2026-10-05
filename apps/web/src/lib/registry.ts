@@ -13,12 +13,15 @@ import type { EvaluatedFinding, SkillFrontmatter, SkillManifest } from '@agenthu
 import { and, count, desc, eq, gt, inArray, lt, ne, or, type SQL, sql } from 'drizzle-orm';
 import semver from 'semver';
 import {
+  blobAccess,
+  blobToken,
   dataDir,
   MAX_LISTED_VERSIONS,
   MAX_STORED_README_CHARS,
   MAX_UPLOAD_BYTES,
   MAX_VERSIONS_PER_PUBLISHER_PER_DAY,
   MAX_VERSIONS_PER_SKILL_PER_DAY,
+  onVercel,
 } from '../config';
 import { type DbHandle, getDatabase } from '../db/client';
 import {
@@ -33,6 +36,7 @@ import {
   skillVersions,
 } from '../db/schema';
 import { type ArtifactStore, LocalFsStore, StorageError, storageKeyFor } from '../storage';
+import { VercelBlobStore } from '../storage-blob';
 import type {
   PublisherRef,
   ResolveResult,
@@ -1406,15 +1410,30 @@ function requirementRows(manifest: SkillManifest | null, skillVersionId: string)
 let cached: { db: Db; registry: Registry } | undefined;
 
 /**
- * Registry backed by `<dataDir>/pglite` and `<dataDir>/artifacts`. The database client is
- * process-wide; the Registry object is per module instance, because Next.js may bundle this
- * module once for pages and once for route handlers.
+ * Artifact store for this deployment: Vercel Blob when BLOB_READ_WRITE_TOKEN is set,
+ * otherwise the local folder `<dataDir>/artifacts`.
+ */
+export function createArtifactStore(): ArtifactStore {
+  const token = blobToken();
+  if (token) return new VercelBlobStore({ token, access: blobAccess() });
+  if (onVercel()) {
+    throw new Error(
+      'BLOB_READ_WRITE_TOKEN is not set. On Vercel the registry stores packages in Vercel ' +
+        'Blob (see docs/deploy-vercel.md); the local artifact folder cannot be written there.',
+    );
+  }
+  return new LocalFsStore(path.join(dataDir(), 'artifacts'));
+}
+
+/**
+ * Registry backed by the configured database (db/client.ts) and artifact store. The database
+ * client is process-wide; the Registry object is per module instance, because Next.js may
+ * bundle this module once for pages and once for route handlers.
  */
 export async function getRegistry(): Promise<Registry> {
   const { db } = await getDatabase();
   if (cached?.db !== db) {
-    const store = new LocalFsStore(path.join(dataDir(), 'artifacts'));
-    cached = { db, registry: new Registry({ db, store }) };
+    cached = { db, registry: new Registry({ db, store: createArtifactStore() }) };
   }
   return cached.registry;
 }

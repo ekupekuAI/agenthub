@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 /**
  * Idempotent schema migration, applied on first use. Mirrors ./schema.ts.
  * Every statement is safe to run again on an existing database.
@@ -137,3 +139,70 @@ INSERT INTO agents (id, display_name, detector_version) VALUES
   ('vscode', 'VS Code / Copilot', '1')
 ON CONFLICT (id) DO NOTHING;
 `;
+
+/** Identifies this version of MIGRATION_SQL in the `agenthub_migrations` table. */
+export const MIGRATION_ID = `schema-${createHash('sha256').update(MIGRATION_SQL).digest('hex').slice(0, 16)}`;
+
+/** Advisory lock key serializing migrations across processes ("agenthub" in ASCII). */
+export const MIGRATION_LOCK_KEY = 0x61676e74;
+
+/** The slice of a node-postgres compatible client the migration needs. */
+export interface MigrationClient {
+  query(text: string, params?: unknown[]): Promise<{ rowCount: number | null }>;
+  release(): void;
+}
+
+function pgCode(error: unknown): string | undefined {
+  return (error as { code?: string } | null)?.code;
+}
+
+/**
+ * Apply MIGRATION_SQL to a shared Postgres database, once per schema version, safely under
+ * concurrent cold starts: the work runs in one transaction holding a transaction-scoped
+ * advisory lock (compatible with PgBouncer transaction pooling), and the applied version is
+ * recorded in `agenthub_migrations`. A process that finds its version recorded skips all of
+ * it without taking the lock. Every statement is idempotent anyway, so a partial history or a
+ * concurrent older deployment cannot break it.
+ */
+export async function migrateSharedDatabase(
+  connect: () => Promise<MigrationClient>,
+): Promise<'applied' | 'current'> {
+  const client = await connect();
+  try {
+    try {
+      const done = await client.query('SELECT 1 FROM agenthub_migrations WHERE id = $1', [
+        MIGRATION_ID,
+      ]);
+      if (done.rowCount) return 'current';
+    } catch (error) {
+      // 42P01: the table does not exist yet (first start).
+      if (pgCode(error) !== '42P01') throw error;
+    }
+    await client.query('BEGIN');
+    try {
+      await client.query('SELECT pg_advisory_xact_lock($1)', [MIGRATION_LOCK_KEY]);
+      await client.query(
+        'CREATE TABLE IF NOT EXISTS agenthub_migrations (id text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())',
+      );
+      const done = await client.query('SELECT 1 FROM agenthub_migrations WHERE id = $1', [
+        MIGRATION_ID,
+      ]);
+      if (done.rowCount) {
+        await client.query('COMMIT');
+        return 'current';
+      }
+      await client.query(MIGRATION_SQL);
+      await client.query(
+        'INSERT INTO agenthub_migrations (id) VALUES ($1) ON CONFLICT (id) DO NOTHING',
+        [MIGRATION_ID],
+      );
+      await client.query('COMMIT');
+      return 'applied';
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw error;
+    }
+  } finally {
+    client.release();
+  }
+}

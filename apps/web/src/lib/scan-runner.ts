@@ -5,13 +5,20 @@
  * slow. Running them on the event loop would freeze every other request, so each check runs in
  * a worker thread with a wall-clock budget and a heap cap: on overrun the worker is terminated
  * and the upload is rejected. A small fixed pool also limits how many uploads are checked at
- * once; a short queue absorbs bursts and anything beyond it is refused as busy.
+ * once; a short queue absorbs bursts and anything beyond it is refused as busy. There is no
+ * in-process fallback: when no worker can start, uploads are refused (fail closed).
  *
- * The worker loads @agenthub/core and @agenthub/scanner straight from their TypeScript sources
- * (Node's built-in type transform plus a resolve hook for extensionless relative imports), so
- * it does not depend on how Next.js bundles the server. Its source is an inline string, which
- * bundlers leave alone.
+ * The worker program is ./scan-worker.ts. Two ways to load it:
+ *
+ * - Production (`next start`, Vercel): the self-contained bundle `dist/scan-worker.mjs`,
+ *   built by scripts/build-scan-worker.mjs before `next build` and shipped with every server
+ *   function (outputFileTracingIncludes in next.config.ts). It does not depend on how Next.js
+ *   bundles the server or on the monorepo sources being present.
+ * - Development and tests (or a production run without the bundle): a small inline bootstrap
+ *   loads the TypeScript sources with Node's type transform and a resolve hook for
+ *   extensionless relative imports.
  */
+import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { Worker } from 'node:worker_threads';
 import type { EvaluatedFinding, SkillFrontmatter, SkillManifest } from '@agenthub/core';
@@ -56,7 +63,26 @@ export interface ScanRunner {
   analyze(bytes: Uint8Array): Promise<AnalyzedPackage>;
 }
 
-/** Worker program. Plain JavaScript (CommonJS eval context); keep it dependency-free. */
+/** Relative path of the bundled worker inside the app directory. */
+export const SCAN_WORKER_BUNDLE = path.join('dist', 'scan-worker.mjs');
+
+/**
+ * Absolute path of the bundled worker, or null when it has not been built. Looked up from the
+ * working directory (the app directory under `next start` and on Vercel) and, for commands
+ * run from the repository root, `apps/web`.
+ */
+export function scanWorkerBundlePath(): string | null {
+  for (const dir of [process.cwd(), path.join(process.cwd(), 'apps', 'web')]) {
+    const file = path.join(dir, SCAN_WORKER_BUNDLE);
+    if (existsSync(file)) return file;
+  }
+  return null;
+}
+
+/**
+ * Bootstrap for running ./scan-worker.ts from source (development and tests). Plain
+ * JavaScript (CommonJS eval context); keep it dependency-free.
+ */
 export const SCAN_WORKER_SOURCE = String.raw`
 'use strict';
 const { parentPort, workerData } = require('node:worker_threads');
@@ -90,74 +116,7 @@ nodeModule.registerHooks({
   },
 });
 
-const RANK = { BLOCK: 0, WARN: 1, INFO: 2 };
-const clip = (value, max) =>
-  typeof value === 'string' && value.length > max ? value.slice(0, max) + '…' : value;
-
-function analyze(core, scanner, bytes, maxFindings) {
-  let pkg;
-  try {
-    pkg = core.readSkillArchive(bytes);
-  } catch (error) {
-    error.stage = 'read';
-    throw error;
-  }
-  const scan = scanner.scanPackage(
-    pkg.files.map((f) => ({ path: f.path, content: f.content, kind: f.kind })),
-  );
-  const policy = scanner.evaluatePolicy(scan.findings, pkg.manifest);
-  const counts = { INFO: 0, WARN: 0, BLOCK: 0 };
-  const blockRuleIds = new Set();
-  const blockKeys = new Set();
-  for (const f of policy.findings) {
-    counts[f.decision] = (counts[f.decision] || 0) + 1;
-    if (f.decision === 'BLOCK') {
-      blockRuleIds.add(f.ruleId);
-      if (blockKeys.size < 2000) blockKeys.add(f.ruleId + '\u0000' + f.file);
-    }
-  }
-  const findings = policy.findings
-    .slice()
-    .sort((a, b) => (RANK[a.decision] ?? 3) - (RANK[b.decision] ?? 3))
-    .slice(0, maxFindings)
-    .map((f) => ({
-      ...f,
-      evidence: clip(f.evidence, 240),
-      message: clip(f.message, 500),
-      subject: clip(f.subject, 200),
-      file: clip(f.file, 300),
-    }));
-  for (const f of findings) if (f.subject === undefined) delete f.subject;
-  return {
-    pkg: {
-      name: pkg.name,
-      version: pkg.version,
-      frontmatter: pkg.frontmatter,
-      body: pkg.body,
-      manifest: pkg.manifest,
-      digest: pkg.digest,
-      files: pkg.files.map((f) => ({
-        path: f.path,
-        size: f.content.byteLength,
-        sha256: pkg.fileHashes[f.path] || '',
-        kind: f.kind,
-        executable: f.executable,
-      })),
-      issues: pkg.issues
-        .slice(0, 200)
-        .map((i) => ({ code: i.code, message: clip(i.message, 500), path: i.path })),
-    },
-    scannerVersion: scan.scannerVersion || scanner.SCANNER_VERSION,
-    outcome: policy.outcome,
-    findings,
-    findingsTotal: policy.findings.length,
-    counts,
-    blockRuleIds: [...blockRuleIds],
-    blockKeys: [...blockKeys],
-  };
-}
-
-function resolvePackage(name) {
+function resolveFromBases(name) {
   let lastError;
   for (const base of workerData.bases) {
     try {
@@ -169,34 +128,32 @@ function resolvePackage(name) {
   throw lastError;
 }
 
-(async () => {
-  const core = await import(resolvePackage('@agenthub/core'));
-  const scanner = await import(resolvePackage('@agenthub/scanner'));
-  parentPort.on('message', (task) => {
-    try {
-      const result = analyze(core, scanner, task.bytes, task.maxFindings);
-      parentPort.postMessage({ id: task.id, ok: true, result });
-    } catch (error) {
-      parentPort.postMessage({
-        id: task.id,
-        ok: false,
-        error: {
-          stage: (error && error.stage) || 'scan',
-          core: core.isAgentHubError(error),
-          code: error && typeof error.code === 'string' ? error.code : undefined,
-          message: error instanceof Error ? error.message : String(error),
-        },
-      });
-    }
-  });
-  parentPort.postMessage({ type: 'ready' });
-})().catch((error) => {
+import(resolveFromBases('@agenthub/web/src/lib/scan-worker.ts')).catch((error) => {
   parentPort.postMessage({
     type: 'fatal',
     error: error instanceof Error ? error.stack || error.message : String(error),
   });
 });
 `;
+
+/** How a worker is started: a bundled file, or an inline program evaluated in the worker. */
+type WorkerProgram = { file: string } | { source: string };
+
+/** The bundle in production when it exists; otherwise the TypeScript sources. */
+function defaultProgram(): WorkerProgram {
+  if (process.env.NODE_ENV === 'production') {
+    const file = scanWorkerBundlePath();
+    if (file) {
+      console.info(`[agenthub] package scanner: bundled worker ${file}`);
+      return { file };
+    }
+    console.warn(
+      `[agenthub] package scanner: ${SCAN_WORKER_BUNDLE} not found, loading the TypeScript ` +
+        'sources instead (run `npm run build -w apps/web`, which builds the bundle first)',
+    );
+  }
+  return { source: SCAN_WORKER_SOURCE };
+}
 
 export interface WorkerScanRunnerOptions {
   /** Budget for one check, in ms. Default: AGENTHUB_SCAN_TIMEOUT_MS or 15 s. */
@@ -212,8 +169,10 @@ export interface WorkerScanRunnerOptions {
   idleMs?: number;
   /** Heap cap per worker, in MB. */
   maxHeapMb?: number;
-  /** Worker program (tests only). */
+  /** Inline worker program (tests only). */
   source?: string;
+  /** Worker program file, e.g. a bundle built by scripts/build-scan-worker.mjs (tests only). */
+  workerFile?: string;
 }
 
 interface WorkerError {
@@ -260,7 +219,7 @@ export class WorkerScanRunner implements ScanRunner {
   private readonly startupTimeoutMs: number;
   private readonly idleMs: number;
   private readonly maxHeapMb: number;
-  private readonly source: string;
+  private readonly program: WorkerProgram;
 
   private readonly idle: Worker[] = [];
   private readonly idleTimers = new Map<Worker, NodeJS.Timeout>();
@@ -276,7 +235,11 @@ export class WorkerScanRunner implements ScanRunner {
     this.startupTimeoutMs = opts.startupTimeoutMs ?? 60_000;
     this.idleMs = opts.idleMs ?? 60_000;
     this.maxHeapMb = opts.maxHeapMb ?? 512;
-    this.source = opts.source ?? SCAN_WORKER_SOURCE;
+    this.program = opts.workerFile
+      ? { file: opts.workerFile }
+      : opts.source
+        ? { source: opts.source }
+        : defaultProgram();
   }
 
   /** Checks currently running and waiting (for tests and diagnostics). */
@@ -338,11 +301,16 @@ export class WorkerScanRunner implements ScanRunner {
     return new Promise((resolve, reject) => {
       let worker: Worker;
       try {
-        worker = new Worker(this.source, {
-          eval: true,
-          execArgv: ['--experimental-transform-types', '--disable-warning=ExperimentalWarning'],
-          // Where to look for @agenthub/core and @agenthub/scanner: the working directory,
-          // then the directory of the entry script (e.g. node_modules/next/dist/bin).
+        const program = this.program;
+        worker = new Worker('file' in program ? program.file : program.source, {
+          eval: !('file' in program),
+          // The source bootstrap needs Node's TypeScript transform; the bundle is plain JS.
+          execArgv:
+            'file' in program
+              ? []
+              : ['--experimental-transform-types', '--disable-warning=ExperimentalWarning'],
+          // Where the bootstrap looks for the worker sources: the working directory, then the
+          // directory of the entry script (e.g. node_modules/next/dist/bin).
           workerData: {
             bases: [process.cwd(), process.argv[1] ? path.dirname(process.argv[1]) : null].filter(
               (b): b is string => typeof b === 'string',

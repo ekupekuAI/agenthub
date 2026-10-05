@@ -21,8 +21,15 @@ const nextConfig: NextConfig = {
   agentRules: false,
   transpilePackages: ['@agenthub/core', '@agenthub/scanner'],
   serverExternalPackages: ['@electric-sql/pglite'],
+  // The package scanner runs in a worker thread loaded from a file at run time, which file
+  // tracing cannot see: ship the prebuilt bundle (scripts/build-scan-worker.mjs) with every
+  // server function (publish, rescan, and the pages whose server actions publish).
+  outputFileTracingIncludes: {
+    '/*': ['./dist/scan-worker.mjs'],
+  },
   experimental: {
-    // Publish uploads go through a server action; packages are capped at 10 MiB.
+    // Publish uploads go through a server action; packages are capped at 10 MiB (on Vercel
+    // the platform caps request bodies at 4.5 MB before they reach the app).
     serverActions: { bodySizeLimit: '11mb' },
     proxyClientMaxBodySize: '12mb',
   },

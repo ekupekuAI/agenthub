@@ -20,6 +20,34 @@ export function dataDir(): string {
   return process.env.AGENTHUB_DATA_DIR ?? path.join(process.cwd(), '.data');
 }
 
+/** True inside a Vercel deployment (build or function), where the filesystem is read-only. */
+export function onVercel(): boolean {
+  return process.env.VERCEL === '1';
+}
+
+/**
+ * Hosted Postgres (Neon) connection string, or null for the embedded database. Without it the
+ * registry uses PGlite in `<dataDir>/pglite`.
+ */
+export function databaseUrl(): string | null {
+  const url = process.env.DATABASE_URL?.trim();
+  return url ? url : null;
+}
+
+/** Vercel Blob read-write token, or null for the local artifact folder `<dataDir>/artifacts`. */
+export function blobToken(): string | null {
+  const token = process.env.BLOB_READ_WRITE_TOKEN?.trim();
+  return token ? token : null;
+}
+
+/**
+ * Access mode of the Vercel Blob store (AGENTHUB_BLOB_ACCESS): 'private' (default) or
+ * 'public'. It must match how the store was created.
+ */
+export function blobAccess(): 'private' | 'public' {
+  return process.env.AGENTHUB_BLOB_ACCESS?.trim().toLowerCase() === 'public' ? 'public' : 'private';
+}
+
 /** The admin token, or null when admin is disabled (unset or shorter than 32 characters). */
 export function adminToken(): string | null {
   const token = process.env.AGENTHUB_ADMIN_TOKEN;

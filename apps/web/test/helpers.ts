@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { loadSkillFromDir, packSkill } from '@agenthub/core';
-import { type DbHandle, openDatabase } from '../src/db/client';
+import { openDatabase, type PgliteHandle } from '../src/db/client';
 import { Registry } from '../src/lib/registry';
 import type { ScanRunner } from '../src/lib/scan-runner';
 import { LocalFsStore } from '../src/storage';
@@ -10,7 +10,7 @@ import { LocalFsStore } from '../src/storage';
 export interface TestEnv {
   registry: Registry;
   root: string;
-  handle: DbHandle;
+  handle: PgliteHandle;
   cleanup(): Promise<void>;
 }
 

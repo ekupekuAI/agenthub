@@ -12,6 +12,8 @@ import { releaseNotesSchema, versionSchema } from '../../../../src/lib/validatio
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
+/** Seconds a serverless platform (Vercel) lets one call run: a cold start plus a full scan. */
+export const maxDuration = 60;
 
 const MULTIPART_OVERHEAD = 64 * 1024;
 

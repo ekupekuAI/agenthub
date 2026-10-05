@@ -6,13 +6,14 @@
  * Idempotent: existing publishers are reused and existing versions are skipped.
  * Run with `npm run seed -w apps/web` (bundled by scripts/run-seed.mjs). New publisher tokens
  * go to `<data dir>/seed-tokens.txt` (owner-only); pass `-- --print-tokens` to print them.
- * Refuses to run with NODE_ENV=production unless AGENTHUB_SEED_FORCE=1.
+ * Refuses to run with NODE_ENV=production, or against a hosted database or blob store
+ * (DATABASE_URL / BLOB_READ_WRITE_TOKEN), unless AGENTHUB_SEED_FORCE=1.
  */
 import { appendFileSync, chmodSync, existsSync, mkdirSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import { loadSkillFromDir, packSkill } from '@agenthub/core';
-import { dataDir } from '../src/config';
-import { getDatabase } from '../src/db/client';
+import { blobToken, databaseUrl, dataDir } from '../src/config';
+import { describeDatabaseUrl, getDatabase } from '../src/db/client';
 import { isApiError } from '../src/lib/errors';
 import { getRegistry, type Registry } from '../src/lib/registry';
 
@@ -78,14 +79,21 @@ async function publishDir(registry: Registry, dir: string, publisherId: string):
 }
 
 async function main(): Promise<void> {
-  if (process.env.NODE_ENV === 'production' && process.env.AGENTHUB_SEED_FORCE !== '1') {
+  const url = databaseUrl();
+  const hosted = url !== null || blobToken() !== null;
+  if (
+    (process.env.NODE_ENV === 'production' || hosted) &&
+    process.env.AGENTHUB_SEED_FORCE !== '1'
+  ) {
     throw new Error(
-      'Refusing to seed with NODE_ENV=production (it creates publishers and tokens). ' +
-        'Set AGENTHUB_SEED_FORCE=1 to seed anyway.',
+      `Refusing to seed ${hosted ? 'a hosted database or blob store' : 'with NODE_ENV=production'} ` +
+        '(it creates publishers and tokens). Set AGENTHUB_SEED_FORCE=1 to seed anyway.',
     );
   }
   const root = findRepoRoot(process.cwd());
   console.log(`data dir: ${dataDir()}`);
+  console.log(`database: ${url ? describeDatabaseUrl(url) : 'embedded (PGlite)'}`);
+  console.log(`packages: ${blobToken() ? 'Vercel Blob' : 'local folder'}`);
   const registry = await getRegistry();
 
   const teamId = await ensurePublisher(registry, 'agenthub-team', true);
@@ -109,7 +117,12 @@ async function main(): Promise<void> {
   await (await getDatabase()).close();
 }
 
-main().catch((error) => {
-  console.error(error instanceof Error ? error.message : error);
-  process.exit(1);
-});
+main().then(
+  // Exit explicitly: a hosted database's WebSocket connections can linger for a while after
+  // the pool has ended, and nothing is left to do.
+  () => process.exit(process.exitCode ?? 0),
+  (error) => {
+    console.error(error instanceof Error ? error.message : error);
+    process.exit(1);
+  },
+);

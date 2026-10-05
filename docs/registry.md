@@ -1,8 +1,10 @@
 # Running the registry
 
 The registry is the Next.js app in `apps/web`. It serves the website and the `/api/v1` API
-that the CLI talks to. It stores metadata in an embedded Postgres database (PGlite) and
-packages in a content-addressed folder. No external services are required.
+that the CLI talks to. By default it stores metadata in an embedded Postgres database (PGlite)
+and packages in a content-addressed folder, so no external services are required. With
+`DATABASE_URL` and `BLOB_READ_WRITE_TOKEN` set it uses a hosted Postgres (Neon) and Vercel
+Blob instead; see [Deploying](#deploying).
 
 ## Run it locally
 
@@ -37,13 +39,18 @@ npm run start -w apps/web
 
 | Variable | Purpose |
 |---|---|
-| `AGENTHUB_DATA_DIR` | Where data lives. Default: `apps/web/.data` (`pglite/` for the database, `artifacts/` for packages). |
+| `AGENTHUB_DATA_DIR` | Where data lives. Default: `apps/web/.data` (`pglite/` for the database, `artifacts/` for packages, `seed-tokens.txt`). |
+| `DATABASE_URL` | Hosted Postgres (Neon) connection string, preferably the pooled one. Replaces the embedded database. The schema is created on first use. |
+| `BLOB_READ_WRITE_TOKEN` | Vercel Blob token. Replaces the local package folder. |
+| `AGENTHUB_BLOB_ACCESS` | `private` (default) or `public`: must match how the Blob store was created. |
 | `AGENTHUB_ADMIN_TOKEN` | Enables administration. At least 32 characters. Without it, admin pages and routes answer 503. |
 | `AGENTHUB_SESSION_SECRET` | Optional, at least 32 characters. Signs admin sessions. Defaults to a key derived from the admin token. |
-| `AGENTHUB_TRUST_PROXY` | Number of trusted reverse proxies in front of the app (for example `1`). Rate limiting then uses the address appended by the outermost trusted proxy. Leave it unset when the app is reached directly: client-supplied `X-Forwarded-For` is then ignored and anonymous traffic shares one rate-limit bucket per route group. |
+| `AGENTHUB_TRUST_PROXY` | Number of trusted reverse proxies in front of the app (for example `1`; on Vercel, `1`). Rate limiting then uses the address appended by the outermost trusted proxy. Leave it unset when the app is reached directly: client-supplied `X-Forwarded-For` is then ignored and anonymous traffic shares one rate-limit bucket per route group. |
 | `AGENTHUB_SCAN_TIMEOUT_MS` | Time budget for validating and scanning one upload (default 15000). Uploads that exceed it are rejected. |
 | `AGENTHUB_SCAN_CONCURRENCY` | Uploads scanned at the same time (default 2). Extra uploads queue briefly, then get 429. |
 | `AGENTHUB_SECURITY_CONTACT` | Contact shown in the footer and on the Guidelines page. |
+
+`apps/web/.env.example` lists every setting with a short explanation.
 
 Generate secrets with a password manager or:
 
@@ -96,17 +103,23 @@ Quarantined versions answer 403 on download; revoked versions answer 410.
 
 ## Deploying
 
-The app runs anywhere Node.js 22+ runs with a persistent disk for `AGENTHUB_DATA_DIR`.
+**Vercel (free, no domain):** follow [Deploy the registry on Vercel](deploy-vercel.md). It uses
+Neon for the database and Vercel Blob for packages, and covers seeding, checks and the limits
+of the free plans.
 
-1. Build with `npm run build -w apps/web` and start with `npm run start -w apps/web`.
+**Your own server:** the app runs anywhere Node.js 22+ runs. With no `DATABASE_URL` and no
+`BLOB_READ_WRITE_TOKEN` it needs a persistent disk for `AGENTHUB_DATA_DIR`.
+
+1. Build with `npm run build -w apps/web` and start with `npm run start -w apps/web`. The build
+   first bundles the package scanner into `apps/web/dist/scan-worker.mjs`, which the server
+   runs in worker threads.
 2. Put it behind HTTPS. The CLI refuses plain `http://` for anything except `localhost`.
 3. Set `AGENTHUB_ADMIN_TOKEN`, and `AGENTHUB_TRUST_PROXY=1` if a reverse proxy sits in front.
-4. Back up the data folder. Packages are immutable, so incremental backups stay small.
+4. Back up the data folder (or the Postgres database and Blob store). Packages are immutable,
+   so incremental backups stay small.
 
-Serverless platforms without a persistent disk need a hosted Postgres and an object store in
-place of the embedded database and the local artifact folder. The storage layer is behind an
-`ArtifactStore` interface and the database behind Drizzle, so both can be swapped without
-touching the API.
+The seed refuses to write to a hosted database or Blob store unless `AGENTHUB_SEED_FORCE=1` is
+set; `npm run seed -w apps/web -- --env-file <file>` reads the settings from a file.
 
 ## Tests
 

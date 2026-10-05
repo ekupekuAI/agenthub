@@ -5,6 +5,8 @@ import { scanBodySchema, slugParamsSchema } from '../../../../../../src/lib/vali
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
+/** Seconds a serverless platform (Vercel) lets one call run: a cold start plus a full scan. */
+export const maxDuration = 60;
 
 /** POST /api/v1/skills/:slug/scan  { version } (admin) */
 export const POST = apiRoute<{ slug: string }>('admin', async (request, params) => {
