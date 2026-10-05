@@ -154,6 +154,73 @@ agenthub remove web-testing
 
 Only files agenthub installed are removed. Files you added or changed are kept and listed.
 
+## Interactive mode
+
+Run `agenthub` with no command in a terminal to open the interactive app. It does everything
+the commands below do, through the same engine, policy and approval rules, with the plan,
+findings and capability changes laid out as cards.
+
+```bash
+agenthub              # interactive mode
+agenthub -g           # start in the user scope
+agenthub --no-color   # without colors
+```
+
+Type a few words and press Enter to search the registry, or type `/` to open the command
+palette. It filters as you type; ↑↓ select, Tab completes (including installed skill names),
+Enter runs.
+
+| Command | What it does |
+|---|---|
+| `/search <query>` | Results with verdict (✔ allow, ⚠ warn, ✖ block), agents and summary |
+| `/install <name[@range] | ./folder | file.skillpkg>` | Plan → review → confirm → staged install |
+| `/remove <skill>` | Shows what would be deleted, then asks |
+| `/list` | Installed skills with status, approval and agents |
+| `/update [skill]` | Candidates with the CHANGE column; Enter expands the new capabilities |
+| `/diff <skill>` | What the next version can do that the installed one cannot |
+| `/approve <skill>` | Review and approve the installed capability inventory |
+| `/rollback <skill>` | Restore the previous snapshot |
+| `/verify [skill]` | Per-file drift against the lockfile |
+| `/doctor` | Agents, folders, locks, approvals and problems, check by check |
+| `/agents` | Choose target agents for this session (space toggles) |
+| `/scope [project|user]` | Switch scope |
+| `/registry [set <url> | reset]` | Show the registry, or use another one for this session |
+| `/theme [dark|light|mono]` | Switch the color theme |
+| `/help`, `/clear`, `/quit` | Help, back to home, leave |
+
+Screens:
+
+- **Search** — Enter opens the detail, `i` plans an install, `d` shows the diff; Tab lets you
+  refine the query live.
+- **Skill detail** — the trust receipt (digests, scanner, verdict stamp), declared permissions,
+  the capability inventory, findings grouped BLOCK / WARN / INFO, requirements. Enter installs.
+- **Install** — the plan shows which agents read each target folder, the safety findings,
+  requirements and capabilities. Plans with WARN findings default to No. A blocked plan shows
+  the rule and `file:line` evidence and writes nothing. After you confirm, the install runs
+  through Scanning → Staging → Swapping → Verifying → Committed and ends with reload hints.
+- **Update** — when a version can do more than the one you approved, its new capabilities are
+  shown first and must be approved explicitly: press `a`, then answer the second question.
+  A plain `y` never approves new capabilities. Press `r` on the result to roll back.
+- **Installed** (`/list`) — `v` verify, `a` approve, `d` diff, `u` update, `b` roll back,
+  `x` remove.
+
+Keys: Esc goes back (or closes the palette), `?` opens help, `q` twice quits from the home
+screen, Ctrl+C quits from anywhere (a running install finishes first).
+
+| Variable | Effect |
+|---|---|
+| `NO_COLOR` | No colors (also `--no-color`, or `/theme mono`) |
+| `FORCE_COLOR=1|2|3` | Force 16, 256 or 24-bit colors (detected otherwise) |
+| `AGENTHUB_REDUCED_MOTION=1` | No animation: every screen renders its final state at once |
+| `AGENTHUB_ASCII=1` | ASCII borders, symbols and spinners only |
+| `AGENTHUB_UNICODE=1` | Full symbol set on the classic Command Prompt |
+| `AGENTHUB_NO_TUI=1` | Never open the interactive mode |
+
+The interactive mode opens only when both input and output are a terminal, outside CI and with
+no command. Scripts, pipes and every command (`agenthub install x --json`, …) keep the classic
+output. Windows Terminal, PowerShell and VS Code get the full symbol set; the classic Command
+Prompt gets symbols every console font has, unless `AGENTHUB_UNICODE=1`.
+
 ## Command reference
 
 | Command | What it does |

@@ -13,9 +13,13 @@
     "@agenthub/adapters": "*",
     "@agenthub/core": "*",
     "@agenthub/scanner": "*",
-    "commander": "^15.0.0"
+    "commander": "^15.0.0",
+    "ink": "^8.0.0",
+    "react": "^19.3.0"
   },
   "devDependencies": {
-    "@agenthub/test-fixtures": "*"
+    "@agenthub/test-fixtures": "*",
+    "@types/react": "^19.3.0",
+    "ink-testing-library": "^4.0.0"
   }
 }

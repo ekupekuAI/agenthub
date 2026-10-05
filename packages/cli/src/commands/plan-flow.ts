@@ -7,7 +7,7 @@ import { expansionCount } from '../capability-format';
 import type { CommandContext } from '../context';
 import { formatInstalled, formatPlan } from '../format';
 import { clean } from '../output';
-import { canPrompt, confirm, confirmPlan } from '../prompt';
+import { canPrompt, confirm, confirmPlan, planDefaultYes } from '../prompt';
 import { resolvePaths } from '../wiring';
 
 /** AGENTHUB_APPROVED_BY, cleaned to what the lock accepts (self-asserted, may be absent). */
@@ -131,12 +131,11 @@ async function confirmCapabilities(
       return withBy({ mode: 'flag' });
     }
     if (!ctx.opts.yes && canPrompt(options)) {
-      const count = expansionCount(caps.unapproved);
-      const from = plan.previous === undefined ? '' : `${clean(plan.previous.version)} → `;
-      await confirm(
-        `Approve ${count} new capabilit${count === 1 ? 'y' : 'ies'} and update ${clean(plan.skill.name)} ${from}${clean(plan.skill.version)}?`,
-        { ...options, defaultYes: false, required: true },
-      );
+      await confirm(capabilityApprovalQuestion(plan), {
+        ...options,
+        defaultYes: false,
+        required: true,
+      });
       return withBy({ mode: 'prompt' });
     }
     throw approvalRequiredError(plan);
@@ -145,4 +144,57 @@ async function confirmCapabilities(
   // A fresh install records an approval: say who confirmed it and how.
   if (plan.previous === undefined) return withBy({ mode: ctx.opts.yes ? 'yes' : 'prompt' });
   return verb.approveCapabilities === true ? withBy({ mode: 'flag' }) : undefined;
+}
+
+/** The question that approves an expansion (asked on its own; a plain yes never approves). */
+export function capabilityApprovalQuestion(plan: InstallPlan): string {
+  const count = plan.capabilities === undefined ? 0 : expansionCount(plan.capabilities.unapproved);
+  const from = plan.previous === undefined ? '' : `${clean(plan.previous.version)} → `;
+  return `Approve ${count} new capabilit${count === 1 ? 'y' : 'ies'} and update ${clean(plan.skill.name)} ${from}${clean(plan.skill.version)}?`;
+}
+
+/**
+ * How an interactive session (a person at a terminal, no --yes, no --approve-capabilities)
+ * confirms a plan — the same rules as the prompt in runPlan:
+ * - 'capabilities': the plan expands beyond the approved baseline; only an explicit capability
+ *   approval applies it, default No;
+ * - 'plan': the usual confirmation, default No with WARN findings, --dev or `caution`.
+ */
+export type InteractiveConfirmation =
+  | { kind: 'capabilities'; question: string; count: number; defaultYes: false }
+  | { kind: 'plan'; question: string; defaultYes: boolean };
+
+export function interactiveConfirmation(
+  plan: InstallPlan,
+  verb: { question: string; caution?: boolean },
+): InteractiveConfirmation {
+  const caps = plan.capabilities;
+  if (caps?.approvalRequired) {
+    return {
+      kind: 'capabilities',
+      question: capabilityApprovalQuestion(plan),
+      count: expansionCount(caps.unapproved),
+      defaultYes: false,
+    };
+  }
+  return {
+    kind: 'plan',
+    question: verb.question,
+    defaultYes: planDefaultYes(plan, verb.caution === true),
+  };
+}
+
+/**
+ * The approval an interactive yes records (runPlan's prompt path): an approved expansion, or a
+ * fresh install; an update without expansion carries the existing approval forward.
+ */
+export function interactiveApproval(
+  plan: InstallPlan,
+  env: Record<string, string | undefined>,
+): ApprovalInput | undefined {
+  const by = approvedBy(env);
+  if (plan.capabilities?.approvalRequired || plan.previous === undefined) {
+    return by === undefined ? { mode: 'prompt' } : { mode: 'prompt', by };
+  }
+  return undefined;
 }

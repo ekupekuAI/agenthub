@@ -20,6 +20,7 @@ import { updateCommand } from './commands/update';
 import { verifyCommand } from './commands/verify';
 import { CommandContext, type CommandResult, type GlobalOptions, type Runtime } from './context';
 import { exitCodeFor, Output } from './output';
+import { launchTui, tuiRequest } from './tui/launch';
 
 declare const __AGENTHUB_VERSION__: string | undefined;
 
@@ -77,6 +78,11 @@ Environment:
   AGENTHUB_AGENTS      testing and CI only: replaces agent detection with a list,
                        e.g. "claude-code,codex:medium" (id[:high|medium|low])
   NO_COLOR             disable colors (same as --no-color)
+  AGENTHUB_NO_TUI      never open the interactive mode
+
+Interactive mode:
+  Run "agenthub" with no command on a terminal for the interactive app (type / for
+  commands). Scripts, pipes, CI and every command above keep this classic output.
 
 Exit codes:
   0 ok · 1 error or problems found · 2 usage
@@ -401,6 +407,20 @@ export async function run(argv: string[], runtime: Runtime = defaultRuntime()): 
   if (argv.length === 1 && (argv[0] === '--version' || argv[0] === '-V')) {
     runtime.stdout.write(`${VERSION}\n`);
     return 0;
+  }
+
+  // `agenthub` alone on a terminal opens the interactive mode; scripts, pipes, CI and every
+  // subcommand keep the classic CLI.
+  const interactive = tuiRequest(argv, runtime);
+  if (interactive !== null) {
+    try {
+      return await launchTui(interactive, runtime, VERSION);
+    } catch (error) {
+      const out = fallbackOut();
+      out.failure('agenthub', error);
+      out.notice('The interactive mode could not start; run "agenthub --help" for the commands.');
+      return exitCodeFor(error);
+    }
   }
 
   try {

@@ -18,8 +18,23 @@ export async function installCommand(
 ): Promise<CommandResult> {
   if (target === undefined) return restoreCommand(ctx);
   const engine = await ctx.engine();
-  const scope = await ctx.scope();
+  const request = await installRequest(ctx, target);
+  const plan = await engine.plan(request);
+  const flow = await runPlan(ctx, plan, {
+    question: `Install ${plan.skill.name} ${plan.skill.version}?`,
+    done: 'Installed',
+    approveCapabilities: opts.approveCapabilities === true,
+  });
+  return { data: { dryRun: flow.dryRun, plan: flow.plan, result: flow.result } };
+}
 
+/**
+ * The engine request for `install <target>`: classifies the target (a bare name is always a
+ * registry name, never a local folder), checks the registry and emits the registry and --dev
+ * notices.
+ */
+export async function installRequest(ctx: CommandContext, target: string): Promise<InstallRequest> {
+  const scope = await ctx.scope();
   const source = await classifyTarget(target, { cwd: ctx.cwd });
   if (source.kind === 'registry') {
     const wiring = await ctx.wiring();
@@ -52,12 +67,5 @@ export async function installCommand(
   if (agents !== undefined) request.agents = agents;
   const channel = ctx.channel();
   if (channel !== undefined) request.channel = channel;
-
-  const plan = await engine.plan(request);
-  const flow = await runPlan(ctx, plan, {
-    question: `Install ${plan.skill.name} ${plan.skill.version}?`,
-    done: 'Installed',
-    approveCapabilities: opts.approveCapabilities === true,
-  });
-  return { data: { dryRun: flow.dryRun, plan: flow.plan, result: flow.result } };
+  return request;
 }

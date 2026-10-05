@@ -52,6 +52,17 @@ export async function confirm(
   if (!agreed) throw new AgentHubError('CANCELLED', 'cancelled — nothing was changed');
 }
 
+/**
+ * The terminal default for a plan's confirmation: "no" with WARN findings, a --dev override or
+ * `caution` (e.g. the skill's source registry changes), "yes" otherwise.
+ */
+export function planDefaultYes(
+  plan: Pick<InstallPlan, 'policy' | 'dev'>,
+  caution = false,
+): boolean {
+  return !hasWarnings(plan) && !plan.dev && !caution;
+}
+
 /** True when applying the plan would write anything (not every target is unchanged). */
 export function planWrites(plan: Pick<InstallPlan, 'targets'>): boolean {
   return plan.targets.length === 0 || plan.targets.some((target) => target.action !== 'unchanged');
@@ -70,7 +81,7 @@ export function confirmPlan(
   const { caution, ...rest } = opts;
   return confirm(question, {
     ...rest,
-    defaultYes: !hasWarnings(plan) && !plan.dev && caution !== true,
+    defaultYes: planDefaultYes(plan, caution === true),
     required: plan.needsConfirmation || planWrites(plan) || plan.dev || caution === true,
   });
 }

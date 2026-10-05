@@ -104,7 +104,8 @@ export function changeLabel(c: UpdateCandidate): string {
   return approvedBefore ? `expands (+${change.unapproved.length})` : 'unapproved';
 }
 
-async function checkUpdates(
+/** Update candidates in `scope` (read-only); `capabilities` fills the CHANGE column. */
+export async function checkUpdates(
   ctx: CommandContext,
   scope: Scope,
   name: string | undefined,
@@ -118,7 +119,8 @@ async function checkUpdates(
   });
 }
 
-async function planFor(ctx: CommandContext, name: string): Promise<InstallPlan | null> {
+/** The update plan for one skill in the command's scope; null when it is up to date. */
+export async function planFor(ctx: CommandContext, name: string): Promise<InstallPlan | null> {
   const engine = await ctx.engine();
   const scope = await ctx.scope();
   const opts: { dev: boolean; force: boolean; channel?: 'stable' | 'beta' } = {
