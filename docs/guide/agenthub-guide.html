@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>agenthub — Quick Guide</title>
+<style>
+  @page { size: A4; margin: 0; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --ink: #0B0C0E; --paper: #FAFAF7; --line: #E3E3DC; --muted: #4A515B; --subtle: #5F6978;
+    --signal: #C5F04A; --signal-ink: #3F6212; --warn: #92400E; --block: #AD2037; --info: #075985;
+    --code-bg: #F1F1EB;
+  }
+  html, body { width: 210mm; height: 297mm; }
+  body {
+    font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+    font-size: 8.1pt; line-height: 1.38; color: var(--ink); background: var(--paper);
+    -webkit-print-color-adjust: exact; print-color-adjust: exact;
+  }
+  .page { width: 210mm; height: 297mm; padding: 9mm 10mm 7mm; display: flex; flex-direction: column; }
+  header {
+    display: flex; align-items: flex-end; justify-content: space-between; gap: 6mm;
+    background: var(--ink); color: #ECEEF0; border-radius: 3.5mm; padding: 5mm 6mm 4.5mm; margin-bottom: 4mm;
+  }
+  .brand { display: flex; align-items: center; gap: 2.5mm; font-family: Consolas, "Cascadia Mono", monospace; font-size: 10pt; color: #A3ABB5; }
+  .seal { width: 4.2mm; height: 4.2mm; border-radius: 50%; background: var(--signal); display: inline-grid; place-items: center; color: var(--ink); font-size: 7pt; font-weight: 700; }
+  h1 { font-family: Georgia, "Times New Roman", serif; font-weight: 400; font-size: 21pt; line-height: 1.05; letter-spacing: -0.01em; color: #fff; margin-top: 1.5mm; }
+  h1 em { color: var(--signal); }
+  .lede { color: #C9CED4; font-size: 8.4pt; max-width: 112mm; margin-top: 1.5mm; }
+  .hero-cmd { text-align: right; }
+  .hero-cmd .label { font-family: Consolas, monospace; font-size: 6.5pt; letter-spacing: .12em; text-transform: uppercase; color: #808995; }
+  .hero-cmd code { display: block; margin-top: 1mm; background: #16191D; border: 1px solid #353B43; border-radius: 2mm; padding: 1.6mm 2.6mm; color: var(--signal); font-size: 8.6pt; white-space: nowrap; }
+  .hero-cmd .then { color: #A3ABB5; font-size: 7pt; margin-top: 1mm; }
+  .grid { flex: 1; display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 3.5mm; min-height: 0; }
+  .col { display: flex; flex-direction: column; gap: 3mm; min-height: 0; }
+  section { background: #fff; border: 1px solid var(--line); border-radius: 2.5mm; padding: 2.8mm 3.2mm; }
+  h2 { font-size: 7pt; letter-spacing: .12em; text-transform: uppercase; color: var(--signal-ink); font-family: Consolas, monospace; font-weight: 700; margin-bottom: 1.6mm; display: flex; gap: 1.6mm; align-items: center; }
+  h2 .n { background: var(--ink); color: var(--signal); border-radius: 1mm; padding: 0 1.2mm; font-size: 6.5pt; }
+  p + p { margin-top: 1.2mm; }
+  code, .mono { font-family: Consolas, "Cascadia Mono", monospace; font-size: 7.4pt; }
+  pre { font-family: Consolas, "Cascadia Mono", monospace; font-size: 7.1pt; line-height: 1.42; background: var(--code-bg); border-radius: 1.5mm; padding: 1.6mm 2.2mm; margin-top: 1.2mm; white-space: pre-wrap; word-break: break-word; }
+  pre .c { color: var(--subtle); }
+  ol, ul { padding-left: 4mm; }
+  li + li { margin-top: .7mm; }
+  table { width: 100%; border-collapse: collapse; }
+  td { padding: .75mm 0; vertical-align: top; border-bottom: 1px dotted var(--line); }
+  tr:last-child td { border-bottom: none; }
+  td:first-child { white-space: nowrap; padding-right: 2mm; font-family: Consolas, monospace; font-size: 7.3pt; color: var(--ink); }
+  td:last-child { color: var(--muted); }
+  .chip { display: inline-block; font-family: Consolas, monospace; font-size: 6.6pt; font-weight: 700; border-radius: 1mm; padding: 0 1.2mm; border: 1px solid; }
+  .i { color: var(--info); border-color: #9CC9E8; background: #EEF6FC; }
+  .w { color: var(--warn); border-color: #E8C58F; background: #FDF5E8; }
+  .b { color: var(--block); border-color: #E7A3AE; background: #FCEEF0; }
+  .s { color: var(--signal-ink); border-color: #B9D77A; background: #F3FAE3; }
+  .agents { display: grid; grid-template-columns: auto 1fr; gap: .6mm 2mm; margin-top: 1mm; }
+  .agents .mono { color: var(--ink); }
+  .note { color: var(--subtle); font-size: 7.2pt; margin-top: 1.2mm; }
+  .kbd { font-family: Consolas, monospace; font-size: 6.8pt; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 1mm; padding: 0 1mm; background: #fff; }
+  footer { margin-top: 3mm; display: flex; justify-content: space-between; align-items: center; color: var(--subtle); font-size: 7pt; border-top: 1px solid var(--line); padding-top: 2mm; }
+  footer > div { white-space: nowrap; }
+  footer .links span { margin-left: 4mm; }
+  footer b { color: var(--ink); font-weight: 600; }
+  .tag { font-family: Consolas, monospace; color: var(--signal-ink); }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <header>
+    <div>
+      <div class="brand"><span class="seal">✓</span>agenthub · quick guide</div>
+      <h1>Install agent skills you can <em>trust</em>.</h1>
+      <p class="lede">One command installs a skill into Claude Code, Codex, Cursor and VS Code. agenthub scans it first, checks it against what it declares, and records every byte, so you can verify, update and roll back.</p>
+    </div>
+    <div class="hero-cmd">
+      <div class="label">Install (Node.js 22+)</div>
+      <code>npm install -g @ekupekuai/agenthub</code>
+      <div class="then">then type <span class="mono" style="color:#C5F04A">agenthub</span> in any terminal</div>
+    </div>
+  </header>
+
+  <div class="grid">
+    <!-- Column 1 -->
+    <div class="col">
+      <section>
+        <h2><span class="n">01</span>What it is</h2>
+        <p>AI coding tools learn <b>skills</b>: folders with a <code>SKILL.md</code> plus optional scripts (the open Agent Skills format). agenthub is the package manager and trust layer for them: one place to find, check, install, update and undo skills across all your agents.</p>
+        <div class="agents">
+          <span class="mono">Claude Code</span><span>reads <code>.claude/skills</code></span>
+          <span class="mono">Codex</span><span>reads <code>.agents/skills</code></span>
+          <span class="mono">Cursor, VS Code</span><span>read both</span>
+        </div>
+        <p class="note">agenthub writes the smallest set of folders that covers every agent you use.</p>
+      </section>
+
+      <section>
+        <h2><span class="n">02</span>First five minutes</h2>
+<pre><span class="c"># 1. check your machine and agents</span>
+agenthub doctor
+<span class="c"># 2. find a skill</span>
+agenthub search testing
+agenthub info web-testing
+<span class="c"># 3. install it (run inside your project)</span>
+agenthub install web-testing
+<span class="c"># 4. confirm nothing changed</span>
+agenthub verify</pre>
+        <p class="note">Every install shows a <b>plan</b> first: folders, agents, findings and requirements. Nothing is written until you confirm.</p>
+      </section>
+
+      <section>
+        <h2><span class="n">03</span>Interactive mode</h2>
+        <p>Run <code>agenthub</code> with no arguments for the full-screen app: animated plans, trust receipts and live progress.</p>
+        <table>
+          <tr><td>/</td><td>open the command palette</td></tr>
+          <tr><td>/search /install</td><td>find and install with arrow keys</td></tr>
+          <tr><td>/update /diff</td><td>see what an update newly wants</td></tr>
+          <tr><td>/agents /doctor</td><td>choose agents, run health checks</td></tr>
+        </table>
+        <p class="note"><span class="kbd">Esc</span> back · <span class="kbd">?</span> help · <span class="kbd">q</span><span class="kbd">q</span> quit · <code>AGENTHUB_REDUCED_MOTION=1</code> calms animation</p>
+      </section>
+    </div>
+
+    <!-- Column 2 -->
+    <div class="col">
+      <section>
+        <h2><span class="n">04</span>Everyday commands</h2>
+        <table>
+          <tr><td>install &lt;skill&gt;</td><td>install from the registry (<code>name@^1.2</code> works)</td></tr>
+          <tr><td>install ./folder</td><td>install a local skill or <code>.skillpkg</code></td></tr>
+          <tr><td>install</td><td>restore everything in the lockfile</td></tr>
+          <tr><td>list</td><td>installed skills, agents, approval</td></tr>
+          <tr><td>verify</td><td>re-hash files, report edits (exit 4)</td></tr>
+          <tr><td>update --check</td><td>available updates, changes nothing</td></tr>
+          <tr><td>update --safe</td><td>apply only updates that add nothing new</td></tr>
+          <tr><td>diff &lt;skill&gt;</td><td>what the next version can do extra</td></tr>
+          <tr><td>approve &lt;skill&gt;</td><td>record approval of its capabilities</td></tr>
+          <tr><td>rollback &lt;skill&gt;</td><td>restore the previous version</td></tr>
+          <tr><td>remove &lt;skill&gt;</td><td>remove only files agenthub installed</td></tr>
+          <tr><td>pack ./folder</td><td>build a reproducible <code>.skillpkg</code></td></tr>
+        </table>
+        <p class="note">Flags: <code>--dry-run</code> plan only · <code>--yes</code> no prompt · <code>-g</code> all projects · <code>--agent claude-code,cursor</code> · <code>--json</code> for scripts &amp; CI</p>
+      </section>
+
+      <section>
+        <h2><span class="n">05</span>How safety works</h2>
+        <p>Before anything is written, a static scanner checks every file and compares what it finds with what the skill declares in <code>agenthub.yaml</code>.</p>
+        <table>
+          <tr><td><span class="chip i">INFO</span></td><td>behavior the skill declared, shown to you</td></tr>
+          <tr><td><span class="chip w">WARN</span></td><td>undeclared network, programs or env reads: you must confirm</td></tr>
+          <tr><td><span class="chip b">BLOCK</span></td><td>secret reads, download-and-run, obfuscation, hidden instructions, persistence: install stops</td></tr>
+        </table>
+        <p class="note">agenthub never runs a skill's scripts. Installs are all-or-nothing, and a failed update restores the old version.</p>
+      </section>
+    </div>
+
+    <!-- Column 3 -->
+    <div class="col">
+      <section>
+        <h2><span class="n">06</span>Updates you approve</h2>
+        <p>Each version gets a <b>capability inventory</b>: programs it runs, hosts it contacts, env vars and secrets it reads, external links it follows. If an update can do more than the version you approved, agenthub stops:</p>
+<pre>+ network  telemetry.example.com
++ exec     uvx
+This update can do more than the
+version you approved.  Approve? [y/N]</pre>
+        <p class="note"><code>--yes</code> alone never approves new capabilities; use <code>--approve-capabilities</code> after <code>agenthub diff</code>.</p>
+      </section>
+
+      <section>
+        <h2><span class="n">07</span>Teams &amp; projects</h2>
+        <p>Inside a git project, skills install into that project and are recorded in <code>.agenthub/agenthub.lock</code> (versions + per-file hashes). <b>Commit the lockfile and the skill folders</b>: teammates get identical skills on clone, and <code>agenthub verify</code> catches tampering.</p>
+      </section>
+
+      <section>
+        <h2><span class="n">08</span>Publish your own skill</h2>
+<pre><span class="c"># agenthub.yaml next to SKILL.md</span>
+schema: 1
+version: 1.0.0
+permissions:
+  network: [registry.npmjs.org]
+  exec: [npx, node]</pre>
+        <p class="note">Check with <code>agenthub install ./my-skill --dry-run</code>, then <code>agenthub pack ./my-skill</code> and upload it on the website's <b>Publish</b> page. Versions are immutable; every upload is scanned.</p>
+      </section>
+
+      <section>
+        <h2><span class="n">09</span>If something's off</h2>
+        <table>
+          <tr><td>skill not shown</td><td>Claude Code <code>/reload-skills</code>; restart Cursor</td></tr>
+          <tr><td>exit 3</td><td>blocked or needs approval: read the plan</td></tr>
+          <tr><td>exit 4</td><td>files changed: <code>install &lt;skill&gt; --force</code></td></tr>
+          <tr><td>exit 5</td><td>missing runtime, e.g. node &gt;=22</td></tr>
+        </table>
+      </section>
+    </div>
+  </div>
+
+  <footer>
+    <div><span class="tag">Every skill. Every agent. Nothing you didn't approve.</span></div>
+    <div class="links">
+      <span><b>Website</b> agenthub-registry.vercel.app</span>
+      <span><b>Guidelines</b> /guidelines</span>
+      <span><b>npm</b> @ekupekuai/agenthub</span>
+    </div>
+  </footer>
+</div>
+</body>
+</html>

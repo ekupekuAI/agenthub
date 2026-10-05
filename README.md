@@ -32,11 +32,23 @@ Proceed? [Y/n] y
 | **Transactional** | An install either lands in every target or in none. A failed update restores the previous version. |
 | **Lockfile + verify** | `.agenthub/agenthub.lock` pins version, digest and per-file hashes. `agenthub verify` catches drift. |
 | **Update and rollback** | `update --check`, `update --safe`, and `rollback` to the previous snapshot. |
+| **Capability-gated updates** | An update that can do more than the version you approved (new hosts, programs, unpinned remote instructions) is refused until you approve it. |
+| **Interactive mode** | Run `agenthub` with no arguments for a full-screen terminal app with a `/` command palette. |
 | **Registry you control** | A hosted registry with immutable, content-addressed releases, or a plain folder of `.skillpkg` files. |
 
-## Quick start
+## Install
 
 Requires Node.js 22 or newer.
+
+```bash
+npm install -g @ekupekuai/agenthub
+agenthub doctor
+```
+
+The CLI uses the public registry at **https://agenthub-registry.vercel.app** unless you
+configure another one. A one-page guide is in [docs/guide/agenthub-guide.pdf](docs/guide/agenthub-guide.pdf).
+
+## Develop from source
 
 ```bash
 npm install

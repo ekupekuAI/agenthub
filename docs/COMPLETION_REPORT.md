@@ -113,3 +113,19 @@ Details in `docs/registry.md`. Nothing has been pushed or deployed.
    the registry has public users.
 5. **Capability diff on the website** and an `agenthub audit` view of what each agent
    actually loads.
+
+## Update — 2026-10-06: released
+
+| | |
+|---|---|
+| Registry (live) | https://agenthub-registry.vercel.app — Vercel + Neon Postgres + private Vercel Blob; seeded with 10 curated skills; quarantine verified live |
+| CLI on npm | `npm install -g @ekupekuai/agenthub` (0.1.0); the live registry is the built-in default |
+| Interactive mode | `agenthub` with no arguments opens the full-screen terminal app (`/` command palette, animated install, capability-approval step) |
+| CI | GitHub Actions on Windows, macOS and Linux with Node 22 and 24: passing |
+| Tests | 1,069 automated + 10 browser tests |
+| One-page guide | `docs/guide/agenthub-guide.pdf` |
+
+Fixed after the first report: a real bug where the project scope could resolve to the
+user's home folder when `AGENTHUB_USER_HOME`/`AGENTHUB_HOME` were overridden (found when the
+system temp folder lives inside the home folder); a test guard now fails any test that
+touches the real home folders. The database seed prefers IPv4 for networks with broken IPv6.
