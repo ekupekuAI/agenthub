@@ -10,3 +10,6 @@ coverage/
 .agenthub/tmp/
 test-results/
 playwright-report/
+
+.vercel
+.env*
