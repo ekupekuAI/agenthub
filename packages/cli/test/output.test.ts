@@ -1,7 +1,9 @@
-import { AgentHubError } from '@agenthub/core';
+import { AgentHubError, type InstallPlan } from '@agenthub/core';
 import { describe, expect, it } from 'vitest';
+import { formatPlan } from '../src/format';
 import {
   colorEnabled,
+  createStyle,
   errorEnvelope,
   exitCodeFor,
   Output,
@@ -10,7 +12,9 @@ import {
   successEnvelope,
   toJson,
 } from '../src/output';
-import { run } from '../src/program';
+import { recoversFirst, run } from '../src/program';
+
+const cp = (code: number): string => String.fromCodePoint(code);
 
 function sink(isTTY = false) {
   const chunks: string[] = [];
@@ -50,6 +54,15 @@ describe('JSON envelope', () => {
     expect(plain.error.details).toBeUndefined();
     const verbose = errorEnvelope('doctor', error, true);
     expect(verbose.error.details).toMatchObject({ stack: expect.stringContaining('boom') });
+  });
+
+  it('escapes Unicode format characters in serialized JSON, keeping the value', () => {
+    const text = `x${cp(0x202e)}y${cp(0xe0041)}z é`;
+    const json = toJson(successEnvelope('info', { text }));
+    expect(json).not.toContain(cp(0x202e));
+    expect(json).not.toContain(cp(0xe0041));
+    expect(json).toContain('\\u202e');
+    expect(JSON.parse(json).data.text).toBe(text);
   });
 
   it('escapes DEL and C1 characters in serialized JSON', () => {
@@ -102,6 +115,123 @@ describe('terminal-injection guard', () => {
     expect(sanitizeForTerminal(colored, false)).toBe('[31mred[39m ]0;title');
   });
 
+  it('strips Unicode format characters (bidi overrides, zero-width, tags) and line separators', () => {
+    const hostile = [
+      'a',
+      0x202e,
+      'b',
+      0x2066,
+      'c',
+      0x200b,
+      'd',
+      0xfeff,
+      'e',
+      0xe0041,
+      'f',
+      0x2028,
+      'g',
+      0x2029,
+      'h',
+      0xad,
+      'i',
+    ]
+      .map((part) => (typeof part === 'number' ? cp(part) : part))
+      .join('');
+    expect(stripControl(hostile)).toBe('abcdefghi');
+    expect(stripControl(hostile, { keepNewlines: true })).toBe('abcdefghi');
+    expect(sanitizeForTerminal(hostile, true)).toBe('abcdefghi');
+    // Ordinary non-ASCII text is kept.
+    expect(stripControl('café — ✔ → 日本')).toBe('café — ✔ → 日本');
+  });
+
+  it('keeps data escape sequences out of colored terminal output', () => {
+    const stdout = sink(true);
+    const out = new Output({
+      json: false,
+      verbose: false,
+      color: true,
+      env: {},
+      stdout,
+      stderr: sink(true),
+    });
+    const evil = 'name\u001b[8m hidden \u001b[0m\u001b]8;;http://x\u0007';
+    const plan = {
+      skill: { name: evil, version: `1.0.0${evil}`, digest: 'sha256:abc' },
+      source: { kind: 'registry', name: evil, range: evil, registry: evil },
+      scope: 'project',
+      scopeRoot: '/p',
+      agents: [],
+      targets: [
+        { dir: 'd', absDir: '/p/d', lockPath: evil, agents: ['claude-code'], action: 'create' },
+      ],
+      duplicates: [],
+      policy: {
+        outcome: 'confirm',
+        findings: [
+          {
+            ruleId: evil,
+            file: evil,
+            line: 1,
+            evidence: evil,
+            message: evil,
+            decision: 'WARN',
+            declared: false,
+          },
+        ],
+      },
+      requirements: [{ kind: 'runtime', name: evil, constraint: evil, found: evil, ok: true }],
+      issues: [{ level: 'warning', code: evil, message: evil, path: evil }],
+      blockers: [{ code: 'CONFLICT', message: evil }],
+      needsConfirmation: true,
+      hints: [],
+      dev: false,
+      force: false,
+    } as unknown as InstallPlan;
+    out.lines(formatPlan(plan, out.style, { home: '/home/x' }));
+    const text = stdout.text();
+    expect(text).toContain('\u001b[33m'); // our own colors are kept
+    expect(text).not.toContain('\u001b[8m');
+    expect(text).not.toContain('\u001b[0m');
+    expect(text).not.toContain('\u001b]');
+  });
+
+  it('discloses every agent that reads a target folder', () => {
+    const plan = {
+      skill: { name: 'demo', version: '1.0.0', digest: 'sha256:abc' },
+      source: { kind: 'dir', path: '/x/demo' },
+      scope: 'project',
+      scopeRoot: '/p',
+      agents: [],
+      targets: [
+        {
+          dir: '.claude/skills',
+          absDir: '/p/.claude/skills/demo',
+          lockPath: '.claude/skills/demo',
+          agents: ['claude-code'],
+          action: 'create',
+        },
+      ],
+      duplicates: [],
+      policy: { outcome: 'allow', findings: [] },
+      requirements: [],
+      issues: [],
+      blockers: [],
+      needsConfirmation: false,
+      hints: [],
+      dev: false,
+      force: false,
+    } as unknown as InstallPlan;
+    const text = formatPlan(plan, createStyle(false), { home: '/home/x' }).join(' | ');
+    expect(text).toMatch(/\.claude\/skills\/demo .*also read by: cursor, vscode/);
+    const noted = formatPlan(
+      { ...plan, hints: ['the registry comes from the project config'] },
+      createStyle(false),
+      { home: '/home/x' },
+    );
+    expect(noted).toContain('Notes');
+    expect(noted).toContain('  - the registry comes from the project config');
+  });
+
   it('Output never writes raw escape sequences from data', () => {
     const stdout = sink(false);
     const stderr = sink(false);
@@ -151,6 +281,20 @@ describe('run()', () => {
     const help = rt.stdout.text();
     for (const name of ['AGENTHUB_HOME', 'AGENTHUB_REGISTRY', 'NO_COLOR', 'AGENTHUB_AGENTS']) {
       expect(help).toContain(name);
+    }
+  });
+});
+
+describe('crash recovery before commands', () => {
+  it('runs only for commands that write', () => {
+    const none = { dryRun: false };
+    for (const command of ['doctor', 'list', 'verify', 'search', 'info', 'pack', 'config']) {
+      expect(recoversFirst(command, none, {})).toBe(false);
+    }
+    expect(recoversFirst('update', none, { check: true })).toBe(false);
+    expect(recoversFirst('install', { dryRun: true }, {})).toBe(false);
+    for (const command of ['install', 'remove', 'update', 'rollback']) {
+      expect(recoversFirst(command, none, {})).toBe(true);
     }
   });
 });

@@ -21,6 +21,68 @@ function isControlChar(code: number): boolean {
   return code <= 0x1f || (code >= 0x7f && code <= 0x9f);
 }
 
+/** True for a Windows device name such as `con`, `nul`, `com1` or `lpt9` (any case). */
+export function isWindowsReservedName(name: string): boolean {
+  return WINDOWS_RESERVED.test(name);
+}
+
+/**
+ * Characters that render as nothing, as blank space, or as a path separator: Unicode
+ * whitespace other than the ASCII space, default-ignorable code points (variation selectors,
+ * Hangul fillers, the combining grapheme joiner, tag characters), line/paragraph separators,
+ * the braille blank and slash look-alikes.
+ */
+const INVISIBLE_OR_CONFUSABLE =
+  /[\p{Default_Ignorable_Code_Point}\p{Zl}\p{Zp}⠀⁄∕∖╱╲⧵⧸⧹﹨／＼]|[^\S ]/u;
+
+/** Characters escaped by {@link escapeForDisplay}. */
+const UNSAFE_FOR_DISPLAY =
+  /[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}]|[^\S ]/u;
+
+const SHORT_ESCAPES: Record<string, string> = {
+  '\b': '\\b',
+  '\f': '\\f',
+  '\n': '\\n',
+  '\r': '\\r',
+  '\t': '\\t',
+  '"': '\\"',
+  '\\': '\\\\',
+};
+
+/**
+ * Make an untrusted string safe to print inside double quotes in a terminal, log or error
+ * message: quotes and backslashes are escaped as in JSON, and every control, invisible,
+ * bidi, unpaired-surrogate or non-ASCII whitespace character becomes a `\uXXXX` escape
+ * (`\u{XXXXX}` above U+FFFF). For plain text the result equals `JSON.stringify(s).slice(1, -1)`.
+ */
+export function escapeForDisplay(value: string): string {
+  return escapeChars(value, true);
+}
+
+/**
+ * Like {@link escapeForDisplay} but leaves quotes and backslashes alone: for text that is
+ * already a message (such as a validator's), where only unsafe characters must go.
+ */
+export function escapeUnsafeChars(value: string): string {
+  return escapeChars(value, false);
+}
+
+function escapeChars(value: string, quote: boolean): string {
+  let out = '';
+  for (const ch of value) {
+    const short = quote || (ch !== '"' && ch !== '\\') ? SHORT_ESCAPES[ch] : undefined;
+    if (short !== undefined) {
+      out += short;
+    } else if (UNSAFE_FOR_DISPLAY.test(ch)) {
+      const cp = ch.codePointAt(0) as number;
+      out += cp > 0xffff ? `\\u{${cp.toString(16)}}` : `\\u${cp.toString(16).padStart(4, '0')}`;
+    } else {
+      out += ch;
+    }
+  }
+  return out;
+}
+
 /**
  * Split a path into the ustar `prefix` and `name` fields, or return null when it cannot be
  * stored in a plain ustar header (name ≤ 100 bytes, prefix ≤ 155 bytes, split at a '/').
@@ -64,7 +126,7 @@ export function checkPackagePath(
   limits: PackageLimits = DEFAULT_LIMITS,
 ): string | null {
   if (typeof path !== 'string' || path.length === 0) return 'path is empty';
-  const shown = JSON.stringify(path).slice(1, -1);
+  const shown = escapeForDisplay(path);
   for (let i = 0; i < path.length; i++) {
     if (isControlChar(path.charCodeAt(i))) {
       return `path "${shown}" contains a control character`;
@@ -73,6 +135,9 @@ export function checkPackagePath(
   if (/\p{Cs}/u.test(path)) return `path "${shown}" is not valid Unicode (unpaired surrogate)`;
   if (/\p{Cf}/u.test(path)) {
     return `path "${shown}" contains an invisible formatting character (such as a bidi override)`;
+  }
+  if (INVISIBLE_OR_CONFUSABLE.test(path)) {
+    return `path "${shown}" contains an invisible, blank or slash-like character`;
   }
   if (path.includes('\\')) return `path "${path}" contains a backslash`;
   if (path.startsWith('/')) return `path "${path}" is absolute`;

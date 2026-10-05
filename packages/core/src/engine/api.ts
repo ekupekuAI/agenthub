@@ -29,6 +29,13 @@ export interface AgentPort {
   reloadHint(agent: AgentId): string | undefined;
   /** Path-table version shown by doctor. */
   tableVersion: string;
+  /**
+   * Whether agenthub may install into `dir`: exact match against the write candidates for the
+   * scope, no trimming or normalisation, never a legacy folder such as `.codex/skills`
+   * (@agenthub/adapters `isWritableSkillsDir`). Lock-derived and fixed target folders must pass
+   * it. Optional for compatibility; when absent only `reads()` and strict segment rules apply.
+   */
+  isWritable?(scope: Scope, dir: string): boolean;
 }
 
 export interface SecurityPort {
@@ -228,8 +235,31 @@ export interface UpdateCandidate {
   current: string;
   latest: string | null;
   latestCompatible: string | null;
-  status: 'up-to-date' | 'available' | 'current-revoked' | 'not-in-registry' | 'drift';
+  status:
+    | 'up-to-date'
+    | 'available'
+    | 'current-revoked'
+    | 'not-in-registry'
+    | 'drift'
+    /** The current version is quarantined by the registry. */
+    | 'current-quarantined'
+    /** Installed from another registry than the configured one: reinstall explicitly. */
+    | 'registry-mismatch'
+    /** The registry's copy of the installed version has different contents than the lock. */
+    | 'digest-mismatch';
   reason?: string;
+}
+
+/** Options of restore() / planRestore() (`agenthub install` with no argument). */
+export interface RestoreOptions {
+  dev?: boolean;
+  force?: boolean;
+  /**
+   * Asked once per plan with `needsConfirmation` (WARN findings, a --dev override, or folders that
+   * would be replaced), after every plan was made and before anything is applied. Without it,
+   * restore() refuses such plans with USAGE; answering false cancels the restore (CANCELLED).
+   */
+  confirm?: (plan: InstallPlan) => Promise<boolean>;
 }
 
 export interface DoctorProblem {
@@ -253,6 +283,8 @@ export type ConfigSource = 'flag' | 'env' | 'project' | 'user' | 'default';
 export interface ResolvedConfig {
   effective: AgentHubConfig;
   sources: Partial<Record<keyof AgentHubConfig, ConfigSource>>;
+  /** Ignored project settings (e.g. an untrusted project registry), for plans and doctor. */
+  warnings?: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -274,6 +306,8 @@ export interface EngineDeps {
   hooks?: {
     /** Called after each target is swapped in, before validation. Throwing simulates a failure. */
     afterSwap?: (absDir: string) => void | Promise<void>;
+    /** When a step fails, leave everything as a crashed process would (no undo, journal kept). */
+    simulateCrash?: boolean;
   };
 }
 
@@ -286,8 +320,18 @@ export interface Engine {
   plan(req: InstallRequest): Promise<InstallPlan>;
   /** Refuses (throws) when plan.blockers is non-empty. */
   apply(plan: InstallPlan): Promise<InstallResult>;
-  /** `agenthub install` with no argument: reinstall/verify every lock entry of the scope. */
-  restore(scope: Scope, opts?: { dev?: boolean; force?: boolean }): Promise<InstallResult[]>;
+  /**
+   * `agenthub install` with no argument: reinstall/verify every lock entry of the scope. Every
+   * entry is planned first; any blocker aborts before anything is written, and plans that need
+   * confirmation go through `opts.confirm` (see RestoreOptions).
+   */
+  restore(scope: Scope, opts?: RestoreOptions): Promise<InstallResult[]>;
+  /**
+   * The plans restore() would apply, one per lock entry (sorted by name), for callers that show
+   * and confirm each plan themselves and then call apply(). Plans may carry blockers (REVOKED,
+   * CONFLICT, …); they are never applied by this call.
+   */
+  planRestore(scope: Scope, opts?: { dev?: boolean; force?: boolean }): Promise<InstallPlan[]>;
   remove(
     name: string,
     scope: Scope,
@@ -295,7 +339,11 @@ export interface Engine {
   ): Promise<RemoveResult>;
   verify(scope: Scope, name?: string): Promise<VerifyReport[]>;
   list(scope?: Scope): Promise<ListedSkill[]>;
-  checkUpdates(scope: Scope, names?: string[]): Promise<UpdateCandidate[]>;
+  checkUpdates(
+    scope: Scope,
+    names?: string[],
+    opts?: { channel?: 'stable' | 'beta' },
+  ): Promise<UpdateCandidate[]>;
   /** Plan an update to the highest compatible version; null when already up to date. */
   planUpdate(
     name: string,

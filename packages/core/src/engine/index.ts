@@ -6,7 +6,10 @@ export {
   type LoadConfigOptions,
   type LoadedConfig,
   loadConfig,
+  projectTrustKey,
   resolveRegistry,
+  sameRegistry,
+  trustProjectRegistry,
   validateConfig,
   writeConfigValue,
 } from './config';
@@ -15,8 +18,10 @@ export { createFileRegistry } from './file-registry';
 export {
   diffFiles,
   hashInstalledDir,
+  isNetworkPath,
   isWithin,
   LINK_MARKER,
+  mkdirp,
   removeTree,
   renameWithRetry,
   retrySettings,
@@ -32,6 +37,13 @@ export {
   writeJournal,
 } from './journal';
 export { emptyLock, parseLock, readLock, serializeLock, sortKeysDeep, writeLock } from './lock';
+export {
+  acquireProcessLock,
+  isProcessAlive,
+  lockSettings,
+  PROCESS_LOCK_FILE,
+  processLockFile,
+} from './proclock';
 export { latestVersion, type ResolveOptions, type ResolveOutcome, resolveVersion } from './resolve';
 export {
   CONFIG_FILE,

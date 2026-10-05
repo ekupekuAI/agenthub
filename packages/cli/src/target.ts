@@ -25,10 +25,11 @@ export async function statKind(path: string): Promise<PathKind> {
   }
 }
 
-/** True for inputs that can only be meant as a path (./x, ../x, /x, C:\x, x/y, x.skillpkg). */
+/** True for inputs that can only be meant as a path (./x, ../x, /x, ~/x, C:\x, x/y, x.skillpkg). */
 export function looksLikePath(target: string): boolean {
   return (
     target.startsWith('.') ||
+    target.startsWith('~') ||
     target.includes('/') ||
     target.includes('\\') ||
     isAbsolute(target) ||
@@ -37,12 +38,19 @@ export function looksLikePath(target: string): boolean {
   );
 }
 
+/**
+ * A path-like argument is a local folder or .skillpkg file; anything else is a registry
+ * `name[@range]`. A bare name never resolves to a local folder, even when one with that name
+ * exists here: a cloned repository must not be able to substitute its own copy for a registry
+ * skill the user asks for by name (`./name` installs the folder).
+ */
 export async function classifyTarget(
   target: string,
   opts: { cwd: string; stat?: StatFn },
 ): Promise<SourceSpec> {
   const statFn = opts.stat ?? statKind;
   if (target.trim() === '') throw new AgentHubError('USAGE', 'install target must not be empty');
+  if (!looksLikePath(target)) return parseRegistrySpec(target);
 
   const abs = resolve(opts.cwd, target);
   const kind = await statFn(abs);
@@ -57,10 +65,21 @@ export async function classifyTarget(
   if (kind === 'other') {
     throw new AgentHubError('USAGE', `${target} is neither a folder nor a .skillpkg file`);
   }
-  if (looksLikePath(target)) {
-    throw new AgentHubError('NOT_FOUND', `no such file or folder: ${abs}`, { path: abs });
-  }
-  return parseRegistrySpec(target);
+  throw new AgentHubError('NOT_FOUND', `no such file or folder: ${abs}`, { path: abs });
+}
+
+/**
+ * For a bare registry name: the local folder of the same name, if one exists (so the CLI can
+ * point out that `./name` installs it). Null for path-like input or when nothing is there.
+ */
+export async function shadowedLocalPath(
+  target: string,
+  opts: { cwd: string; stat?: StatFn },
+): Promise<string | null> {
+  if (looksLikePath(target)) return null;
+  const at = target.indexOf('@');
+  const abs = resolve(opts.cwd, at === -1 ? target : target.slice(0, at));
+  return (await (opts.stat ?? statKind)(abs)) === 'dir' ? abs : null;
 }
 
 /** `name` or `name@range`. */

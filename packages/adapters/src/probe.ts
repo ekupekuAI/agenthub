@@ -8,12 +8,18 @@ import { getEnvVar } from './context';
 
 export const DETECT_TIMEOUT_MS = 5000;
 
-const VERSION_PATTERN = /\d+\.\d+(?:\.\d+)?/;
+/**
+ * Bounded quantifiers plus a "no digit before" guard keep the scan linear: a run of digits
+ * without a dot costs at most ~10 steps per position instead of backtracking over the rest.
+ */
+const VERSION_PATTERN = /(?<!\d)\d{1,9}\.\d{1,9}(?:\.\d{1,9})?/;
+/** `--version` prints its version up front; only this much of the output is looked at. */
+const VERSION_SCAN_LIMIT = 4096;
 const MAX_REASON_LENGTH = 120;
 
-/** First `major.minor[.patch]` token in the text, if any. */
+/** First `major.minor[.patch]` token near the start of the text, if any. */
 export function parseVersion(output: string): string | undefined {
-  return VERSION_PATTERN.exec(output)?.[0];
+  return VERSION_PATTERN.exec(output.slice(0, VERSION_SCAN_LIMIT))?.[0];
 }
 
 export interface ExecutableProbe {
@@ -94,17 +100,23 @@ export async function safeListDir(ctx: DetectContext, dir: string): Promise<stri
   }
 }
 
-export function pathApi(ctx: DetectContext): typeof path.posix {
+export function pathApi(ctx: Pick<DetectContext, 'platform'>): typeof path.posix {
   return ctx.platform === 'win32' ? path.win32 : path.posix;
 }
 
 /** Absolute path of `~/<relative>` for this context. */
-export function homePath(ctx: DetectContext, ...segments: string[]): string {
+export function homePath(
+  ctx: Pick<DetectContext, 'home' | 'platform'>,
+  ...segments: string[]
+): string {
   return pathApi(ctx).join(ctx.home, ...segments);
 }
 
 /** Folder probe for an environment variable that names a directory, if it is set. */
-export function envFolder(ctx: DetectContext, name: string): FolderProbe[] {
+export function envFolder(
+  ctx: Pick<DetectContext, 'env' | 'home' | 'platform'>,
+  name: string,
+): FolderProbe[] {
   const value = getEnvVar(ctx.env, name, ctx.platform)?.trim();
   if (!value) return [];
   const p = pathApi(ctx);
@@ -116,7 +128,7 @@ export function envFolder(ctx: DetectContext, name: string): FolderProbe[] {
 }
 
 /** Shows paths under the home directory as `~…`. */
-export function displayPath(ctx: DetectContext, target: string): string {
+export function displayPath(ctx: Pick<DetectContext, 'home' | 'platform'>, target: string): string {
   const home = ctx.home;
   if (home === '') return target;
   const win = ctx.platform === 'win32';

@@ -4,9 +4,9 @@
  */
 import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { fixturePath } from '@agenthub/test-fixtures';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -35,10 +35,10 @@ function cli(cwd: string, args: string[], extraEnv: Record<string, string> = {})
     AGENTHUB_USER_HOME: homeDir,
     AGENTHUB_AGENTS: 'claude-code,codex,cursor,vscode',
     NO_COLOR: '1',
-    ...extraEnv,
   };
   delete env.AGENTHUB_REGISTRY;
   delete env.AGENTHUB_CHANNEL;
+  Object.assign(env, extraEnv);
   const result = spawnSync(process.execPath, [bin, ...args], {
     cwd,
     env,
@@ -238,11 +238,35 @@ describe('agenthub CLI (built)', () => {
         expect(result.code, result.stderr).toBe(0);
         expect(existsSync(out)).toBe(true);
       }
-      const set = cli(project, ['config', 'set', 'registry', `file:${registry}`, '--json']);
+      const set = cli(project, ['config', 'set', 'registry', `file:${registry}`, '-g', '--json']);
+      expect(set.code, set.stdout + set.stderr).toBe(0);
+      expect(set.json().data.scope).toBe('user');
+      const get = cli(project, ['config', 'get', 'registry', '--json']);
+      expect(get.json().data.source).toBe('user');
+    });
+
+    afterAll(() => {
+      // The user config is shared by every test in this file.
+      cli(project, ['config', 'unset', 'registry', '-g']);
+    });
+
+    it('ignores a registry set by the project config until it is trusted', async () => {
+      const other = await newProject('untrusted-registry');
+      await mkdir(join(other, 'reg'), { recursive: true });
+      const set = cli(other, ['config', 'set', 'registry', 'file:./reg', '--json']);
       expect(set.code, set.stdout + set.stderr).toBe(0);
       expect(set.json().data.scope).toBe('project');
-      const get = cli(project, ['config', 'get', 'registry', '--json']);
-      expect(get.json().data.source).toBe('project');
+      // Stored so that it resolves to <project>/reg, not <project>/.agenthub/reg.
+      expect(set.json().data.value).toBe('file:../reg');
+      const get = cli(other, ['config', 'get', 'registry', '--json']);
+      expect(get.json().data.source).not.toBe('project');
+      const refused = cli(other, ['config', 'trust-registry']);
+      expect(refused.code, refused.stdout + refused.stderr).toBe(2);
+      const trusted = cli(other, ['config', 'trust-registry', '--yes', '--json']);
+      expect(trusted.code, trusted.stdout + trusted.stderr).toBe(0);
+      expect(trusted.json().data).toMatchObject({ trusted: true, active: true });
+      const after = cli(other, ['config', 'get', 'registry', '--json']);
+      expect(after.json().data.source).toBe('project');
     });
 
     it('installs a pinned version from the registry', async () => {
@@ -339,5 +363,195 @@ describe('agenthub CLI (built)', () => {
     const noRegistry = cli(project, ['install', 'web-testing', '--json']);
     expect(noRegistry.code).toBe(2);
     expect(noRegistry.json().error.message).toContain('registry');
+  });
+
+  describe('security regressions', () => {
+    let registry: string;
+    const reg = (): Record<string, string> => ({ AGENTHUB_REGISTRY: `file:${registry}` });
+
+    beforeAll(async () => {
+      registry = join(base, 'registry-security');
+      await mkdir(registry, { recursive: true });
+      const project = await newProject('security-pack');
+      for (const version of ['1.0.0', '1.0.1']) {
+        const out = join(registry, `hello-skill-${version}.skillpkg`);
+        const packed = cli(project, [
+          'pack',
+          fixturePath('hello-skill'),
+          '--version',
+          version,
+          '-o',
+          out,
+        ]);
+        expect(packed.code, packed.stderr).toBe(0);
+      }
+    });
+
+    it('never runs a program a manifest names as a runtime (install --dry-run, install, doctor)', async () => {
+      const project = await newProject('probe');
+      const bin = join(base, 'probe-bin');
+      const marker = join(base, 'probe-ran.txt');
+      await mkdir(bin, { recursive: true });
+      if (process.platform === 'win32') {
+        await writeFile(join(bin, 'probepoc.cmd'), `@echo ran>"${marker}"\r\n@echo 9.9.9\r\n`);
+      } else {
+        await writeFile(join(bin, 'probepoc'), `#!/bin/sh\necho ran > "${marker}"\necho 9.9.9\n`);
+        await chmod(join(bin, 'probepoc'), 0o755);
+      }
+      const skill = join(base, 'probe-skill');
+      await mkdir(skill, { recursive: true });
+      await writeFile(
+        join(skill, 'SKILL.md'),
+        '---\nname: probe-skill\ndescription: Test skill that names a runtime on PATH.\n---\n# Probe\n',
+      );
+      await writeFile(
+        join(skill, 'agenthub.yaml'),
+        'schema: 1\nversion: 1.0.0\nrequires:\n  runtimes: { probepoc: "*" }\n',
+      );
+      const pathKey =
+        Object.keys(process.env).find((key) => key.toUpperCase() === 'PATH') ?? 'PATH';
+      const env = { [pathKey]: `${bin}${delimiter}${process.env[pathKey] ?? ''}` };
+
+      const dry = cli(project, ['install', skill, '--dry-run'], env);
+      expect(dry.code, dry.stdout + dry.stderr).toBe(0);
+      expect(dry.stdout).toContain('runtime probepoc');
+      expect(dry.stdout).toContain('cannot be checked locally');
+      expect(existsSync(marker)).toBe(false);
+
+      const install = cli(project, ['install', skill, '--yes'], env);
+      expect(install.code, install.stdout + install.stderr).toBe(0);
+      const doctor = cli(project, ['doctor'], env);
+      expect([0, 1]).toContain(doctor.code);
+      expect(existsSync(marker)).toBe(false);
+    });
+
+    it('requires --yes for any install without a terminal, even without warnings', async () => {
+      const project = await newProject('no-tty');
+      const human = cli(project, ['install', fixturePath('hello-skill')]);
+      expect(human.code, human.stdout + human.stderr).toBe(2);
+      expect(human.stderr).toContain('--yes');
+      const json = cli(project, ['install', fixturePath('hello-skill'), '--json']);
+      expect(json.code).toBe(2);
+      expect(json.json()).toMatchObject({ ok: false, error: { code: 'USAGE' } });
+      expect(existsSync(join(project, '.claude', 'skills', 'hello-skill'))).toBe(false);
+      expect(existsSync(join(project, '.agenthub', 'agenthub.lock'))).toBe(false);
+    });
+
+    it('lock restore shows every plan and needs confirmation for warnings and --dev', async () => {
+      const source = await newProject('restore-source');
+      const installed = cli(source, ['install', fixturePath('prompt-injection'), '--yes']);
+      expect(installed.code, installed.stdout + installed.stderr).toBe(0);
+
+      const clone = await newProject('restore-clone');
+      await mkdir(join(clone, '.agenthub'), { recursive: true });
+      await writeFile(
+        join(clone, '.agenthub', 'agenthub.lock'),
+        await readFile(join(source, '.agenthub', 'agenthub.lock')),
+      );
+      const target = join(clone, '.claude', 'skills', 'prompt-injection');
+
+      const dry = cli(clone, ['install', '--dry-run']);
+      expect(dry.code, dry.stdout + dry.stderr).toBe(0);
+      expect(dry.stdout).toContain('Restore plan');
+      expect(dry.stdout).toContain('WARN');
+      expect(existsSync(target)).toBe(false);
+
+      const refused = cli(clone, ['install']);
+      expect(refused.code, refused.stdout + refused.stderr).toBe(2);
+      expect(refused.stdout).toContain('WARN');
+      expect(refused.stderr).toContain('--yes');
+      expect(existsSync(target)).toBe(false);
+
+      const dev = cli(clone, ['install', '--dev']);
+      expect(dev.code, dev.stdout + dev.stderr).toBe(2);
+      expect(existsSync(target)).toBe(false);
+
+      const accepted = cli(clone, ['install', '--yes']);
+      expect(accepted.code, accepted.stdout + accepted.stderr).toBe(0);
+      expect(accepted.stdout).toContain('Restored');
+      expect(existsSync(join(target, 'SKILL.md'))).toBe(true);
+    });
+
+    it('a same-named local folder never replaces a registry name', async () => {
+      const project = await newProject('shadow');
+      await cp(fixturePath('hello-skill'), join(project, 'hello-skill'), { recursive: true });
+      const noRegistry = cli(project, ['install', 'hello-skill', '--yes']);
+      expect(noRegistry.code, noRegistry.stdout + noRegistry.stderr).toBe(2);
+      expect(noRegistry.stderr).toContain('./hello-skill');
+      expect(existsSync(join(project, '.claude', 'skills', 'hello-skill'))).toBe(false);
+
+      const fromRegistry = cli(project, ['install', 'hello-skill@1.0.0', '--yes', '--json'], reg());
+      expect(fromRegistry.code, fromRegistry.stdout + fromRegistry.stderr).toBe(0);
+      expect(fromRegistry.json().data.plan.source.kind).toBe('registry');
+
+      const local = cli(project, ['install', './hello-skill', '--dry-run', '--json'], reg());
+      expect(local.json().data.plan.source.kind).toBe('dir');
+    });
+
+    it('bulk updates replace a revoked version, and fail when none can replace it', async () => {
+      const project = await newProject('revoked-bulk');
+      const install = cli(project, ['install', 'hello-skill@1.0.0', '--yes'], reg());
+      expect(install.code, install.stdout + install.stderr).toBe(0);
+      await writeFile(
+        join(registry, 'revocations.json'),
+        JSON.stringify([
+          { name: 'hello-skill', version: '1.0.0', reason: 'malicious payload found' },
+        ]),
+      );
+      try {
+        const check = cli(project, ['update', '--check'], reg());
+        expect(check.code, check.stdout + check.stderr).toBe(1);
+        expect(check.stderr).toContain('revoked');
+
+        const safe = cli(project, ['update', '--safe'], reg());
+        expect(safe.code, safe.stdout + safe.stderr).toBe(0);
+        expect((await readLock(project)).skills['hello-skill']?.version).toBe('1.0.1');
+
+        await writeFile(
+          join(registry, 'revocations.json'),
+          JSON.stringify([
+            { name: 'hello-skill', version: '1.0.0', reason: 'malicious payload found' },
+            { name: 'hello-skill', version: '1.0.1', reason: 'malicious payload found' },
+          ]),
+        );
+        for (const args of [
+          ['update', '--safe'],
+          ['update', '--yes'],
+        ]) {
+          const stuck = cli(project, args, reg());
+          expect(stuck.code, stuck.stdout + stuck.stderr).not.toBe(0);
+          expect(stuck.stdout).toContain('remove');
+        }
+      } finally {
+        await rm(join(registry, 'revocations.json'), { force: true });
+      }
+    });
+
+    it('updates never swap a folder-installed skill for a same-named registry package', async () => {
+      const project = await newProject('substitution');
+      await cp(fixturePath('hello-skill'), join(project, 'hello-skill'), { recursive: true });
+      const local = cli(project, ['install', './hello-skill', '--yes']);
+      expect(local.code, local.stdout + local.stderr).toBe(0);
+      const before = await readFile(join(project, '.agenthub', 'agenthub.lock'), 'utf8');
+
+      const safe = cli(project, ['update', '--safe'], reg());
+      expect(safe.stdout + safe.stderr).not.toContain('updated hello-skill');
+      const named = cli(project, ['update', 'hello-skill'], reg());
+      expect(named.code, named.stdout + named.stderr).not.toBe(0);
+      expect(await readFile(join(project, '.agenthub', 'agenthub.lock'), 'utf8')).toBe(before);
+    });
+
+    it('rollback --dry-run prints lock values cleaned', async () => {
+      const project = await newProject('rollback-forged');
+      const installed = cli(project, ['install', fixturePath('hello-skill'), '--yes']);
+      expect(installed.code, installed.stdout + installed.stderr).toBe(0);
+      const lockFile = join(project, '.agenthub', 'agenthub.lock');
+      const lock = JSON.parse(await readFile(lockFile, 'utf8'));
+      lock.skills['hello-skill'].version = '1.0.0\nVerified publisher: Example Corp';
+      await writeFile(lockFile, JSON.stringify(lock, null, 2));
+      const result = cli(project, ['rollback', 'hello-skill', '--dry-run']);
+      const lines = `${result.stdout}\n${result.stderr}`.split(/\r?\n/);
+      expect(lines.some((line) => line.startsWith('Verified publisher'))).toBe(false);
+    });
   });
 });

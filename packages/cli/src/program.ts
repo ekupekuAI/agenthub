@@ -24,8 +24,22 @@ declare const __AGENTHUB_VERSION__: string | undefined;
 export const VERSION: string =
   typeof __AGENTHUB_VERSION__ === 'string' ? __AGENTHUB_VERSION__ : '0.0.0-dev';
 
-/** Commands that run without first recovering interrupted transactions. */
-const NO_RECOVER = new Set(['pack', 'config']);
+/**
+ * Commands that never recover interrupted transactions first: recovery writes (it undoes or
+ * finishes a journal), and a journal may belong to another agenthub process that is still
+ * running. Read-only commands, --dry-run and `update --check` leave journals alone; doctor
+ * reports them.
+ */
+const NO_RECOVER = new Set(['pack', 'config', 'doctor', 'list', 'verify', 'search', 'info']);
+
+export function recoversFirst(
+  command: string,
+  globals: Pick<GlobalOptions, 'dryRun'>,
+  local: Record<string, unknown>,
+): boolean {
+  if (NO_RECOVER.has(command) || globals.dryRun) return false;
+  return !(command === 'update' && local.check === true);
+}
 
 const COMMANDS = new Set([
   'doctor',
@@ -60,6 +74,7 @@ Examples:
   agenthub install ./my-skill
   agenthub install web-testing@^1.2 --dry-run
   agenthub update --check
+  agenthub config trust-registry   (let this project's config choose the registry)
   agenthub verify --json
   agenthub --version`;
 
@@ -182,7 +197,7 @@ export function buildProgram(runtime: Runtime, state: RunState): Command {
       state.command = name;
       state.out = out;
       const ctx = new CommandContext(name, globals, runtime, out);
-      if (!NO_RECOVER.has(name)) await ctx.recover();
+      if (recoversFirst(name, globals, local)) await ctx.recover();
       const call = handler as (ctx: CommandContext, ...rest: unknown[]) => Promise<CommandResult>;
       state.result = await call(ctx, ...positional, local);
     };
@@ -243,7 +258,7 @@ export function buildProgram(runtime: Runtime, state: RunState): Command {
   program
     .command('config')
     .description('show the effective configuration, or get/set/unset a key')
-    .argument('[action]', 'get, set or unset')
+    .argument('[action]', 'get, set, unset or trust-registry')
     .argument('[key]', 'registry, agents, channel or telemetry')
     .argument('[value]', 'value for set')
     .addHelpText(
@@ -255,7 +270,9 @@ Keys:
   channel    stable or beta
   telemetry  true or false (off by default)
 
-set and unset write the project config inside a project, the user config with -g.`,
+set and unset write the project config inside a project, the user config with -g.
+A registry in a project's config is ignored until you run "agenthub config trust-registry"
+in that project (recorded in your user config).`,
     )
     .action(
       action('config', ((

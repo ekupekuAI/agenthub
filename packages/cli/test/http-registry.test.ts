@@ -112,7 +112,8 @@ describe('HttpRegistry', () => {
   });
 
   it('rejects a download whose bytes differ from the advertised archive digest', async () => {
-    handler = standard({ archive: OTHER, header: OTHER });
+    // The header matches the bytes; only the version list's digest differs.
+    handler = standard({ archive: OTHER, header: GOOD });
     const registry = new HttpRegistry(base);
     await expect(registry.download('web-testing', '1.1.0')).rejects.toMatchObject({
       code: 'INTEGRITY',
@@ -132,7 +133,7 @@ describe('HttpRegistry', () => {
         });
         return;
       }
-      json(res, 410, { ok: false, error: { code: 'REVOKED', message: 'leaked token' } });
+      json(res, 410, { ok: false, error: { code: 'GONE', message: 'leaked token' } });
     };
     const registry = new HttpRegistry(base);
     const error = await registry.download('web-testing', '1.0.0').catch((e: unknown) => e);
@@ -148,22 +149,173 @@ describe('HttpRegistry', () => {
     });
   });
 
-  it('maps 404 to NOT_FOUND and 403 to POLICY_BLOCKED', async () => {
+  it('maps 404 to NOT_FOUND and a refused download (403) to POLICY_BLOCKED', async () => {
     const registry = new HttpRegistry(base);
     await expect(registry.listVersions('nope')).rejects.toMatchObject({ code: 'NOT_FOUND' });
-    handler = (_req, res) => json(res, 403, { ok: false, error: { code: 'X', message: 'q' } });
-    await expect(registry.info('web-testing')).rejects.toMatchObject({ code: 'POLICY_BLOCKED' });
+    handler = (req, res) => {
+      if ((req.url ?? '').endsWith('/versions')) {
+        json(res, 200, versionsBody());
+        return;
+      }
+      json(res, 403, { ok: false, error: { code: 'FORBIDDEN', message: 'quarantined' } });
+    };
+    await expect(registry.download('web-testing', '1.1.0')).rejects.toMatchObject({
+      code: 'POLICY_BLOCKED',
+    });
     handler = (_req, res) =>
       json(res, 500, { ok: false, error: { code: 'X', message: 'db down' } });
     await expect(registry.info('web-testing')).rejects.toMatchObject({ code: 'REGISTRY' });
   });
 
+  it('reports a 403 or 410 that is not a refused download as a registry error', async () => {
+    const registry = new HttpRegistry(base);
+    for (const status of [403, 410]) {
+      // A proxy or gateway answering with HTML, on any endpoint.
+      handler = (_req, res) => {
+        res.writeHead(status, { 'content-type': 'text/html' });
+        res.end('<html>Access denied</html>');
+      };
+      for (const call of [
+        () => registry.search('demo'),
+        () => registry.info('web-testing'),
+        () => registry.listVersions('web-testing'),
+      ]) {
+        const error = await call().catch((e: unknown) => e);
+        expect(error).toMatchObject({ code: 'REGISTRY' });
+        expect((error as Error).message).not.toMatch(/quarantined|revoked/);
+      }
+      // A JSON envelope on a non-download endpoint is not a version decision either.
+      handler = (_req, res) =>
+        json(res, status, { ok: false, error: { code: 'FORBIDDEN', message: 'no' } });
+      await expect(registry.info('web-testing')).rejects.toMatchObject({ code: 'REGISTRY' });
+    }
+  });
+
+  it('rejects null and mistyped fields as malformed instead of crashing later', async () => {
+    const registry = new HttpRegistry(base);
+    const latest = { version: '1.0.0', digest: CONTENT, status: 'active' };
+    const cases: [string, unknown, () => Promise<unknown>][] = [
+      [
+        '/api/v1/skills/web-testing',
+        { slug: 'web-testing', name: 'x', versions: [null] },
+        () => registry.info('web-testing'),
+      ],
+      [
+        '/api/v1/skills/web-testing',
+        {
+          slug: 'web-testing',
+          name: 'x',
+          versions: [],
+          latest: { ...latest, permissions: null, scan: 7 },
+        },
+        () => registry.info('web-testing'),
+      ],
+      [
+        '/api/v1/skills/web-testing',
+        {
+          slug: 'web-testing',
+          name: 'x',
+          versions: [],
+          latest: { ...latest, permissions: { network: 'yes, Scan: allow' } },
+        },
+        () => registry.info('web-testing'),
+      ],
+      [
+        '/api/v1/skills/web-testing',
+        {
+          slug: 'web-testing',
+          name: 'x',
+          versions: [],
+          latest: { ...latest, scan: { scannerVersion: '1', outcome: 'verified', findings: [] } },
+        },
+        () => registry.info('web-testing'),
+      ],
+      [
+        '/api/v1/skills',
+        { results: [{ slug: 'demo', name: 'demo', publisher: 7 }] },
+        () => registry.search('demo'),
+      ],
+      [
+        '/api/v1/skills/web-testing/versions',
+        { versions: [{ ...latest, agents: 7 }] },
+        () => registry.listVersions('web-testing'),
+      ],
+      [
+        '/api/v1/skills/web-testing/versions',
+        { versions: [{ ...latest, channel: 'nightly' }] },
+        () => registry.listVersions('web-testing'),
+      ],
+    ];
+    for (const [path, data, call] of cases) {
+      handler = (req, res) => {
+        const url = new URL(req.url ?? '/', base);
+        if (url.pathname === path) json(res, 200, { ok: true, data });
+        else json(res, 404, { ok: false, error: { code: 'NOT_FOUND', message: 'x' } });
+      };
+      const error = await call().catch((e: unknown) => e);
+      expect(error, JSON.stringify(data)).toMatchObject({
+        code: 'REGISTRY',
+        message: expect.stringContaining('malformed'),
+      });
+    }
+  });
+
+  it('treats null optional fields as absent and drops unknown agents and keys', async () => {
+    handler = (req, res) => {
+      const url = new URL(req.url ?? '/', base);
+      if (url.pathname === '/api/v1/skills') {
+        json(res, 200, {
+          ok: true,
+          data: {
+            results: [
+              {
+                slug: 'demo',
+                name: 'demo',
+                summary: null,
+                publisher: null,
+                latestVersion: null,
+                agents: ['codex', 'emacs'],
+                extra: { x: 1 },
+              },
+            ],
+          },
+        });
+        return;
+      }
+      json(res, 200, {
+        ok: true,
+        data: {
+          versions: [
+            {
+              version: '1.0.0',
+              digest: CONTENT,
+              status: 'active',
+              agents: ['cursor', 'notepad'],
+              revokedReason: null,
+            },
+          ],
+        },
+      });
+    };
+    const registry = new HttpRegistry(base);
+    expect(await registry.search('demo')).toEqual([
+      { slug: 'demo', name: 'demo', summary: '', latestVersion: null, agents: ['codex'] },
+    ]);
+    expect(await registry.listVersions('web-testing')).toEqual([
+      { version: '1.0.0', digest: CONTENT, status: 'active', agents: ['cursor'] },
+    ]);
+  });
+
   it('rejects oversized responses, with or without Content-Length', async () => {
     const big = 'x'.repeat(4096);
     handler = (_req, res) => {
-      res.writeHead(200, { 'content-type': 'application/json' });
+      // An explicit Content-Length: rejected before the body is read.
+      res.writeHead(200, { 'content-type': 'application/json', 'content-length': big.length });
       res.end(big);
     };
+    const check = await fetch(`${base}/x`);
+    expect(check.headers.get('content-length')).toBe(String(big.length));
+    await check.arrayBuffer();
     const registry = new HttpRegistry(base, { maxBytes: 1024 });
     await expect(registry.listVersions('web-testing')).rejects.toMatchObject({
       code: 'REGISTRY',
@@ -181,12 +333,20 @@ describe('HttpRegistry', () => {
   });
 
   it('does not follow redirects', async () => {
-    handler = (_req, res) => {
-      res.writeHead(302, { location: 'https://example.invalid/elsewhere' });
+    const hits: string[] = [];
+    handler = (req, res) => {
+      hits.push(req.url ?? '');
+      if ((req.url ?? '').startsWith('/target/')) {
+        // Would be a valid answer if the redirect were followed.
+        json(res, 200, versionsBody());
+        return;
+      }
+      res.writeHead(302, { location: `${base}/target${req.url ?? ''}` });
       res.end();
     };
     const registry = new HttpRegistry(base);
     await expect(registry.listVersions('web-testing')).rejects.toMatchObject({ code: 'REGISTRY' });
+    expect(hits).toEqual(['/api/v1/skills/web-testing/versions']);
   });
 
   it('validates skill names and versions before building URLs', async () => {
@@ -205,7 +365,11 @@ describe('registry URL policy', () => {
     );
     expect(normalizeRegistryUrl('http://localhost:3000')).toBe('http://localhost:3000');
     expect(normalizeRegistryUrl('http://127.0.0.1:8080/')).toBe('http://127.0.0.1:8080');
-    expect(normalizeRegistryUrl('http://[::1]:8080')).toBe('http://[::1]:8080');
+  });
+
+  it('accepts only the loopback hosts the config schema accepts', () => {
+    // core's config schema allows plain http only for localhost and 127.0.0.1.
+    expect(() => normalizeRegistryUrl('http://[::1]:8080')).toThrow(/https/);
   });
 
   it('rejects plain http for remote hosts and other schemes', () => {
@@ -214,10 +378,8 @@ describe('registry URL policy', () => {
     expect(() => normalizeRegistryUrl('https://user:pw@registry.example.com')).toThrow(
       /credentials/,
     );
-    try {
-      normalizeRegistryUrl('http://10.0.0.5');
-    } catch (error) {
-      expect(error).toMatchObject({ code: 'USAGE' });
-    }
+    expect(() => normalizeRegistryUrl('http://10.0.0.5')).toThrow(
+      expect.objectContaining({ code: 'USAGE' }),
+    );
   });
 });

@@ -1,5 +1,6 @@
-import { writeFile } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { randomBytes } from 'node:crypto';
+import { lstat, rename, rm, writeFile } from 'node:fs/promises';
+import { basename, dirname, join, resolve } from 'node:path';
 import type { SkillPackage } from '@agenthub/core';
 import {
   AgentHubError,
@@ -72,6 +73,58 @@ function packVerified(
   return { pkg: current, bytes };
 }
 
+/**
+ * The output must be a new file, or (with -o or --force) an existing regular file. A symbolic
+ * link or anything else at that path is refused: its name comes from the package being packed,
+ * and a planted link must never redirect the write.
+ */
+async function checkOutputPath(
+  file: string,
+  opts: { explicit: boolean; force: boolean },
+): Promise<void> {
+  let info: Awaited<ReturnType<typeof lstat>>;
+  try {
+    info = await lstat(file);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT') return;
+    throw new AgentHubError('IO', `cannot check ${file}: ${code ?? String(error)}`, { path: file });
+  }
+  if (info.isSymbolicLink()) {
+    throw new AgentHubError(
+      'CONFLICT',
+      `${file} is a symbolic link; agenthub never writes through one — remove it or pass another -o`,
+      { path: file },
+    );
+  }
+  if (!info.isFile()) {
+    throw new AgentHubError('CONFLICT', `${file} exists and is not a regular file`, { path: file });
+  }
+  if (!opts.explicit && !opts.force) {
+    throw new AgentHubError(
+      'USAGE',
+      `${file} already exists — pass --force to replace it, or choose another file with -o`,
+      { path: file },
+    );
+  }
+}
+
+/** Writes a fresh temporary file next to the output and renames it into place. */
+async function writeOutput(file: string, bytes: Uint8Array): Promise<void> {
+  const temp = join(
+    dirname(file),
+    `.${basename(file)}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`,
+  );
+  try {
+    await writeFile(temp, bytes, { flag: 'wx' });
+    await rename(temp, file);
+  } catch (error) {
+    await rm(temp, { force: true }).catch(() => undefined);
+    const code = (error as NodeJS.ErrnoException).code ?? String(error);
+    throw new AgentHubError('IO', `cannot write ${file}: ${code}`, { path: file });
+  }
+}
+
 export async function packCommand(
   ctx: CommandContext,
   dir: string,
@@ -91,14 +144,8 @@ export async function packCommand(
   const { pkg, bytes } = packVerified(loaded, opts.version);
   const archive = archiveDigest(bytes);
   const file = resolve(ctx.cwd, opts.output ?? `${pkg.name}-${pkg.version}.skillpkg`);
-  if (!ctx.opts.dryRun) {
-    try {
-      await writeFile(file, bytes);
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code ?? String(error);
-      throw new AgentHubError('IO', `cannot write ${file}: ${code}`, { path: file });
-    }
-  }
+  await checkOutputPath(file, { explicit: opts.output !== undefined, force: ctx.opts.force });
+  if (!ctx.opts.dryRun) await writeOutput(file, bytes);
 
   const s = ctx.out.style;
   ctx.out.print(

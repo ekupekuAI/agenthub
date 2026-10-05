@@ -14,6 +14,12 @@ import type {
   SkillInfo,
 } from '@agenthub/core';
 import { AgentHubError, archiveDigest } from '@agenthub/core';
+import {
+  MalformedError,
+  parseRegistryVersion,
+  parseSearchResults,
+  parseSkillInfo,
+} from './registry-schema';
 
 export const DEFAULT_TIMEOUT_MS = 15_000;
 export const MAX_RESPONSE_BYTES = 10 * 1024 * 1024;
@@ -21,8 +27,8 @@ export const MAX_RESPONSE_BYTES = 10 * 1024 * 1024;
 const SLUG = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 const SEMVER =
   /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$/;
-const DIGEST = /^sha256:[0-9a-f]{64}$/;
-const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
+/** Plain-http hosts; must match the config schema in core (localhost and 127.0.0.1 only). */
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1']);
 
 export interface HttpRegistryOptions {
   fetch?: typeof fetch;
@@ -96,7 +102,7 @@ export class HttpRegistry implements RegistrySource {
     });
     const raw = (data as { versions?: unknown } | null)?.versions;
     if (!Array.isArray(raw)) throw this.malformed('version list');
-    const versions = raw.map((entry) => this.parseVersion(entry));
+    const versions = this.parse(() => raw.map(parseRegistryVersion));
     this.versionCache.set(name, versions);
     return versions;
   }
@@ -164,44 +170,25 @@ export class HttpRegistry implements RegistrySource {
     if (opts.category !== undefined) params.set('category', opts.category);
     const data = await this.getJson(`/api/v1/skills?${params.toString()}`, {});
     const results = (data as { results?: unknown } | null)?.results;
-    if (!Array.isArray(results)) throw this.malformed('search results');
-    return results.filter(isRecord).map((entry) => {
-      if (typeof entry.slug !== 'string' || typeof entry.name !== 'string') {
-        throw this.malformed('search result');
-      }
-      return {
-        ...entry,
-        agents: Array.isArray(entry.agents) ? entry.agents : [],
-        summary: typeof entry.summary === 'string' ? entry.summary : '',
-        latestVersion: typeof entry.latestVersion === 'string' ? entry.latestVersion : null,
-      } as SearchResult;
-    });
+    return this.parse(() => parseSearchResults(results));
   }
 
   async info(name: string): Promise<SkillInfo> {
     assertSlug(name);
     const data = await this.getJson(`/api/v1/skills/${encodeURIComponent(name)}`, { skill: name });
-    if (!isRecord(data) || typeof data.slug !== 'string' || typeof data.name !== 'string') {
-      throw this.malformed('skill detail');
-    }
-    const versions = Array.isArray(data.versions) ? data.versions : [];
-    return { ...data, versions, latest: data.latest ?? null } as unknown as SkillInfo;
+    return this.parse(() => parseSkillInfo(data));
   }
 
   // -------------------------------------------------------------------------
 
-  private parseVersion(entry: unknown): RegistryVersion {
-    if (!isRecord(entry)) throw this.malformed('version entry');
-    const { version, digest, status, archiveDigest: archive } = entry;
-    if (typeof version !== 'string' || !SEMVER.test(version)) throw this.malformed('version');
-    if (typeof digest !== 'string' || !DIGEST.test(digest)) throw this.malformed('digest');
-    if (status !== 'active' && status !== 'quarantined' && status !== 'revoked') {
-      throw this.malformed('version status');
+  /** Runs a schema parser, turning a malformed value into a REGISTRY error. */
+  private parse<T>(fn: () => T): T {
+    try {
+      return fn();
+    } catch (error) {
+      if (error instanceof MalformedError) throw this.malformed(error.what);
+      throw error;
     }
-    if (archive !== undefined && (typeof archive !== 'string' || !DIGEST.test(archive))) {
-      throw this.malformed('archive digest');
-    }
-    return entry as unknown as RegistryVersion;
   }
 
   private async getJson(path: string, context: { skill?: string }): Promise<unknown> {
@@ -258,24 +245,38 @@ export class HttpRegistry implements RegistrySource {
           ? `skill "${context.skill}"`
           : `${context.skill}@${context.version}`;
     const details = { status: response.status, registry: this.id, remote };
-    switch (response.status) {
-      case 404:
-        return new AgentHubError('NOT_FOUND', `${subject} not found in ${this.id}`, details);
-      case 410:
-        return new AgentHubError(
-          'CONFLICT',
-          `version revoked: ${subject}${remote ? ` (${remote})` : ''}`,
-          details,
-        );
-      case 403:
-        return new AgentHubError('POLICY_BLOCKED', `version quarantined: ${subject}`, details);
-      default:
-        return new AgentHubError(
-          'REGISTRY',
-          `registry error (HTTP ${response.status})${remote ? `: ${remote}` : ''}`,
-          details,
-        );
+    const code =
+      isRecord(parsed) && isRecord(parsed.error) && typeof parsed.error.code === 'string'
+        ? parsed.error.code.toUpperCase()
+        : undefined;
+    // Revoked / quarantined only when a download is refused by the registry itself; a 403 or 410
+    // from a proxy, gateway or another endpoint is just a refused request.
+    if (
+      context.version !== undefined &&
+      response.status === 410 &&
+      (code === 'GONE' || code === 'REVOKED')
+    ) {
+      return new AgentHubError(
+        'CONFLICT',
+        `version revoked: ${subject}${remote ? ` (${remote})` : ''}`,
+        details,
+      );
     }
+    if (
+      context.version !== undefined &&
+      response.status === 403 &&
+      (code === 'FORBIDDEN' || code === 'QUARANTINED')
+    ) {
+      return new AgentHubError('POLICY_BLOCKED', `version quarantined: ${subject}`, details);
+    }
+    if (response.status === 404) {
+      return new AgentHubError('NOT_FOUND', `${subject} not found in ${this.id}`, details);
+    }
+    return new AgentHubError(
+      'REGISTRY',
+      `registry refused the request (HTTP ${response.status})${remote ? `: ${remote}` : ''}`,
+      details,
+    );
   }
 
   private networkError(error: unknown): AgentHubError {

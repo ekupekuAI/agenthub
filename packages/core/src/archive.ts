@@ -1,10 +1,10 @@
 import { Buffer, constants as bufferConstants } from 'node:buffer';
-import { gunzipSync, gzipSync } from 'node:zlib';
+import { crc32, gzipSync, inflateRawSync } from 'node:zlib';
 import { AgentHubError } from './errors';
 import { DEFAULT_LIMITS } from './limits';
 import type { RawFile } from './package';
-import { buildSkillPackage } from './package';
-import { checkPackagePath, comparePaths, splitTarPath } from './paths';
+import { buildSkillPackage, excludedSegment } from './package';
+import { checkPackagePath, comparePaths, escapeForDisplay, splitTarPath } from './paths';
 import type { PackageLimits, SkillPackage } from './types';
 
 const BLOCK = 512;
@@ -130,8 +130,8 @@ function integrity(message: string, details?: unknown): AgentHubError {
   return new AgentHubError('INTEGRITY', message, details);
 }
 
-function invalid(message: string, path?: string): AgentHubError {
-  const issue = { level: 'error' as const, code: 'archive.entry', message };
+function invalid(message: string, path?: string, code = 'archive.entry'): AgentHubError {
+  const issue = { level: 'error' as const, code, message };
   return new AgentHubError('VALIDATION', message, {
     issues: [path === undefined ? issue : { ...issue, path }],
   });
@@ -145,7 +145,11 @@ function fieldBytes(block: Uint8Array, [offset, size]: readonly [number, number]
 
 function readName(block: Uint8Array, field: readonly [number, number]): string {
   try {
-    return new TextDecoder('utf-8', { fatal: true }).decode(fieldBytes(block, field));
+    // ignoreBOM keeps a leading U+FEFF in the name so the path rules reject it, instead of
+    // the decoder silently dropping it.
+    return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(
+      fieldBytes(block, field),
+    );
   } catch {
     throw invalid('archive entry name is not valid UTF-8');
   }
@@ -201,19 +205,32 @@ export function readTarEntries(tar: Uint8Array, limits: PackageLimits = DEFAULT_
     const name = readName(header, F.name);
     const prefix = readName(header, F.prefix);
     const path = prefix === '' ? name : `${prefix}/${name}`;
+    // Entry names are untrusted: until the path rules pass, only the escaped form goes into
+    // messages and issue details.
+    const shown = escapeForDisplay(path);
     const typeByte = header[F.typeflag[0]] as number;
     const type = String.fromCharCode(typeByte);
     if (typeByte !== 0 && type !== '0') {
-      const kind =
-        ENTRY_TYPES[type] ?? `type "${typeByte < 0x20 ? `\\x${typeByte.toString(16)}` : type}"`;
+      const kind = ENTRY_TYPES[type] ?? `type "${escapeForDisplay(type)}"`;
       throw invalid(
-        `unsupported archive entry "${path}" (${kind}); only regular files are allowed`,
-        path,
+        `unsupported archive entry "${shown}" (${kind}); only regular files are allowed`,
+        shown,
       );
     }
 
     const problem = checkPackagePath(path, limits);
-    if (problem !== null) throw invalid(`unsafe archive entry: ${problem}`, path);
+    if (problem !== null) throw invalid(`unsafe archive entry: ${problem}`, shown);
+    const excluded = excludedSegment(path);
+    if (excluded !== null) {
+      throw invalid(
+        `archive entry "${path}" contains "${excluded}", which is never part of a skill package`,
+        path,
+        'path.excluded',
+      );
+    }
+    if (fieldBytes(header, F.linkname).length > 0) {
+      throw integrity(`archive entry "${path}" is a regular file but has a link name`);
+    }
     if (seen.has(path)) throw invalid(`duplicate archive entry "${path}"`, path);
     seen.add(path);
     if (seen.size > limits.maxFiles) {
@@ -235,6 +252,10 @@ export function readTarEntries(tar: Uint8Array, limits: PackageLimits = DEFAULT_
     if (start + size > tar.length) throw integrity(`archive is truncated inside "${path}"`);
     files.push({ path, content: tar.slice(start, start + size) });
     offset = start + Math.ceil(size / BLOCK) * BLOCK;
+    if (offset > tar.length) throw integrity(`archive is truncated inside "${path}"`);
+    if (!isZeroBlock(tar.subarray(start + size, offset))) {
+      throw integrity(`archive entry "${path}" has non-zero padding (hidden data)`);
+    }
   }
 }
 
@@ -269,27 +290,99 @@ export function packSkill(pkg: SkillPackage): Uint8Array {
   return gz;
 }
 
-function gunzip(bytes: Uint8Array, limits: PackageLimits): Uint8Array {
+/** gzip header flag bits (RFC 1952). */
+const GZ_FHCRC = 0x02;
+const GZ_FEXTRA = 0x04;
+const GZ_FNAME = 0x08;
+const GZ_FCOMMENT = 0x10;
+const GZ_RESERVED = 0xe0;
+
+function readUint32LE(bytes: Uint8Array, offset: number): number {
+  return (
+    ((bytes[offset] as number) |
+      ((bytes[offset + 1] as number) << 8) |
+      ((bytes[offset + 2] as number) << 16) |
+      ((bytes[offset + 3] as number) << 24)) >>>
+    0
+  );
+}
+
+/** Offset of the deflate data after a gzip member header, validating the header. */
+function gzipDataOffset(bytes: Uint8Array): number {
   if (bytes.length < 18 || bytes[0] !== 0x1f || bytes[1] !== 0x8b) {
     throw integrity('archive is not gzip-compressed');
   }
+  if (bytes[2] !== 8) throw integrity('archive uses an unsupported gzip compression method');
+  const flags = bytes[3] as number;
+  if ((flags & GZ_RESERVED) !== 0) throw integrity('archive has reserved gzip header flags set');
+  let pos = 10;
+  const truncated = () => integrity('archive is truncated (incomplete gzip header)');
+  if ((flags & GZ_FEXTRA) !== 0) {
+    if (pos + 2 > bytes.length) throw truncated();
+    pos += 2 + ((bytes[pos] as number) | ((bytes[pos + 1] as number) << 8));
+  }
+  for (const flag of [GZ_FNAME, GZ_FCOMMENT]) {
+    if ((flags & flag) === 0) continue;
+    const end = bytes.indexOf(0, pos);
+    if (end === -1) throw truncated();
+    pos = end + 1;
+  }
+  if ((flags & GZ_FHCRC) !== 0) {
+    if (pos + 2 > bytes.length) throw truncated();
+    const stored = (bytes[pos] as number) | ((bytes[pos + 1] as number) << 8);
+    if (stored !== (crc32(bytes.subarray(0, pos)) & 0xffff)) {
+      throw integrity('archive gzip header checksum mismatch');
+    }
+    pos += 2;
+  }
+  if (pos + 8 > bytes.length) throw truncated();
+  return pos;
+}
+
+/**
+ * Inflate exactly one gzip member, bounded by the package limits. The CRC-32 and size in the
+ * trailer must match, and nothing may follow the member: no second member, no trailing bytes
+ * (zero or otherwise), so the archive digest covers no data the scanner never sees.
+ */
+function gunzip(bytes: Uint8Array, limits: PackageLimits): Uint8Array {
+  const start = gzipDataOffset(bytes);
   const maxOutputLength = Math.min(
     limits.maxTotalBytes + BLOCK * (limits.maxFiles * 2 + 2),
     bufferConstants.MAX_LENGTH,
   );
+  let inflated: { buffer: Buffer; engine: { bytesWritten: number } };
   try {
-    return new Uint8Array(gunzipSync(bytes, { maxOutputLength }));
+    inflated = inflateRawSync(bytes.subarray(start), {
+      maxOutputLength,
+      info: true,
+    }) as unknown as typeof inflated;
   } catch (cause) {
     const code = (cause as NodeJS.ErrnoException | undefined)?.code;
     if (code === 'ERR_BUFFER_TOO_LARGE') {
-      throw integrity(
-        `archive expands beyond ${maxOutputLength} bytes (size limit exceeded or decompression bomb)`,
-        { maxOutputLength },
-      );
+      const message = `archive expands beyond ${maxOutputLength} bytes (size limit exceeded or decompression bomb)`;
+      throw new AgentHubError('VALIDATION', message, {
+        maxOutputLength,
+        issues: [{ level: 'error', code: 'package.too-large', message }],
+      });
     }
     const message = cause instanceof Error ? cause.message : String(cause);
     throw integrity(`archive is corrupt: ${message}`, { cause: code });
   }
+  const output = new Uint8Array(inflated.buffer);
+  const trailer = start + inflated.engine.bytesWritten;
+  if (trailer + 8 > bytes.length) throw integrity('archive is truncated (gzip trailer missing)');
+  if (readUint32LE(bytes, trailer) !== crc32(output)) {
+    throw integrity('archive gzip checksum mismatch');
+  }
+  if (readUint32LE(bytes, trailer + 4) !== output.length >>> 0) {
+    throw integrity('archive gzip size mismatch');
+  }
+  if (trailer + 8 !== bytes.length) {
+    throw integrity('archive has unexpected data after the gzip stream', {
+      trailingBytes: bytes.length - trailer - 8,
+    });
+  }
+  return output;
 }
 
 export interface ReadArchiveOptions {

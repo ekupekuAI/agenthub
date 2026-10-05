@@ -3,7 +3,7 @@
  * engine wiring.
  */
 import type { AgentHubConfig, AgentId, Engine, Scope } from '@agenthub/core';
-import type { Output } from './output';
+import { clean, type Output } from './output';
 import type { ConfirmOptions, PromptInput } from './prompt';
 import { createWiring, type Wiring } from './wiring';
 
@@ -36,6 +36,7 @@ export interface CommandResult {
 
 export class CommandContext {
   private wiringPromise: Promise<Wiring> | undefined;
+  private registryNoticed = false;
 
   constructor(
     readonly command: string,
@@ -64,6 +65,7 @@ export class CommandContext {
         cwd: this.cwd,
         env: this.env,
         flags: this.configFlags(),
+        global: this.opts.global,
       });
     }
     return this.wiringPromise;
@@ -78,6 +80,27 @@ export class CommandContext {
     const engine = await this.engine();
     const messages = await engine.recover();
     for (const message of messages) this.out.notice(`recovered: ${message}`);
+  }
+
+  /**
+   * Says (once, on stderr) when the registry was chosen by the project's own config file (which
+   * the user must have trusted), and which project settings were ignored, so a cloned repository
+   * cannot silently decide where packages are downloaded from.
+   */
+  async registryNotice(opts: { warnings?: boolean } = {}): Promise<void> {
+    if (this.registryNoticed) return;
+    this.registryNoticed = true;
+    const wiring = await this.wiring();
+    // Project settings the loader ignored (e.g. an untrusted project registry). Plans list
+    // them under Notes, so commands that print a plan pass `warnings: false`.
+    if (opts.warnings !== false) {
+      for (const warning of wiring.config.warnings ?? []) this.out.warn(clean(warning));
+    }
+    if (wiring.registrySource !== 'project' || wiring.registry === null) return;
+    const file = wiring.config.projectConfigPath ?? '.agenthub/config.json';
+    this.out.notice(
+      `note: using the registry ${clean(wiring.registry.id)} set by the project config ${clean(file)}`,
+    );
   }
 
   /** -g → user; otherwise the engine's default (project inside a repo, user outside). */

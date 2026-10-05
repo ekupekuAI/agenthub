@@ -23,6 +23,7 @@ import {
   AGENT_PATHS,
   duplicateAgents,
   getAdapter,
+  isWritableSkillsDir,
   PATH_TABLE_VERSION,
   selectTargetFolders,
 } from '@agenthub/adapters';
@@ -125,6 +126,7 @@ function agentPort(detected: AgentEnvironment[] = DETECTED): AgentPort {
     selectTargets: (scope, agents) => selectTargetFolders(scope, agents),
     duplicates: (scope, folders) => duplicateAgents(scope, folders),
     reads: (agent, scope, dir) => getAdapter(agent).reads(scope, dir),
+    isWritable: (scope, dir) => isWritableSkillsDir(scope, dir),
     reloadHint: (agent) => AGENT_PATHS[agent].reloadHint,
     tableVersion: PATH_TABLE_VERSION,
   };
@@ -988,7 +990,15 @@ describe('file registry', () => {
         scope: 'project',
       }),
     );
-    const checks = await engine.checkUpdates('project', ['web-testing']);
+    // The same registry later publishes 1.1.0 and revokes the installed 1.0.0.
+    await publish(pinned, 'web-testing', '1.1.0');
+    await writeFile(
+      join(pinned, 'revocations.json'),
+      JSON.stringify([{ name: 'web-testing', version: '1.0.0', reason: 'leaks tokens' }]),
+    );
+    const checks = await env
+      .make({ registry: createFileRegistry(pinned) })
+      .checkUpdates('project', ['web-testing']);
     expect(checks[0]).toMatchObject({ status: 'current-revoked', latestCompatible: '1.1.0' });
     expect(checks[0]?.reason).toContain('leaks tokens');
   });
@@ -1018,7 +1028,7 @@ describe('crash recovery', () => {
     await mkdir(join(stagingRoot, 'old'), { recursive: true });
     await rename(absDir, backup);
     const v2 = await makeSkill('hello-skill', { version: '2.0.0', body: '# v2\n' });
-    await mkdir(join(env.base, 'moved'), { recursive: true });
+    const v2pkg = await loadSkillFromDir(v2);
     await rename(v2, absDir);
     const guard = new WriteGuard([env.agenthubHome]);
     await writeJournal(guard, env.agenthubHome, {
@@ -1033,7 +1043,16 @@ describe('crash recovery', () => {
       committed: false,
       lockFile: projectLock(),
       previousLockText: lockBefore,
-      newEntry: null,
+      newEntry: {
+        version: '2.0.0',
+        digest: v2pkg.digest,
+        source: 'dir',
+        registry: null,
+        installedTargets: ['claude-code'],
+        paths: { '.claude/skills/hello-skill': ['claude-code'] },
+        files: v2pkg.fileHashes,
+        installedAt: new Date().toISOString(),
+      },
       startedAt: new Date().toISOString(),
     });
 

@@ -13,7 +13,9 @@ import {
 import {
   catchError,
   encode,
+  hasControlChar,
   issueCodes,
+  issuesOf,
   PNG_BYTES,
   sampleFiles,
   toCrlf,
@@ -273,13 +275,120 @@ describe('readSkillArchive', () => {
     expect(bomb.length).toBeLessThan(64 * 1024);
     const limits = { ...DEFAULT_LIMITS, maxFiles: 4, maxTotalBytes: 64 * 1024 };
     const error = catchError(() => readSkillArchive(bomb, { limits }));
-    expect(error.code).toBe('INTEGRITY');
+    expect(error.code).toBe('VALIDATION');
+    expect(issueCodes(error)).toEqual(['package.too-large']);
     expect(error.message).toMatch(/decompression bomb/);
   });
 
   it('stops a decompression bomb with the default limits', () => {
     const bomb = hostileArchive([{ path: 'zeros.txt', content: new Uint8Array(12 * 1024 * 1024) }]);
-    expect(catchError(() => readSkillArchive(bomb)).code).toBe('INTEGRITY');
+    expect(catchError(() => readSkillArchive(bomb)).code).toBe('VALIDATION');
+  });
+
+  it('reports an honest oversized package as VALIDATION, not INTEGRITY', () => {
+    const big = hostileArchive([
+      { path: 'a.txt', content: new Uint8Array(5 * 1024 * 1024).fill(0x61) },
+      { path: 'b.txt', content: new Uint8Array(5 * 1024 * 1024).fill(0x62) },
+      { path: 'c.txt', content: new Uint8Array(1024 * 1024).fill(0x63) },
+    ]);
+    const error = catchError(() => readSkillArchive(big));
+    expect(error.code).toBe('VALIDATION');
+    expect(issueCodes(error)).toEqual(['package.too-large']);
+  });
+});
+
+describe('readSkillArchive: hidden bytes', () => {
+  const valid = (): Uint8Array => packSkill(buildSkillPackage(sampleFiles()));
+  const join = (...parts: Uint8Array[]): Uint8Array => {
+    const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
+    let at = 0;
+    for (const part of parts) {
+      out.set(part, at);
+      at += part.length;
+    }
+    return out;
+  };
+
+  it('accepts the packer output', () => {
+    expect(readSkillArchive(valid()).name).toBe('web-testing');
+  });
+
+  it('rejects data after the gzip stream', () => {
+    const zeroThenGarbage = join(valid(), new Uint8Array([0, 0x41, 0x42, 0x43]));
+    expect(catchError(() => readSkillArchive(zeroThenGarbage)).code).toBe('INTEGRITY');
+    const zeros = join(valid(), new Uint8Array(1000));
+    expect(catchError(() => readSkillArchive(zeros)).code).toBe('INTEGRITY');
+  });
+
+  it('rejects a multi-member gzip', () => {
+    const second = gzip(encode('payload'));
+    expect(catchError(() => readSkillArchive(join(valid(), second))).code).toBe('INTEGRITY');
+  });
+
+  it('rejects a corrupted gzip trailer', () => {
+    const bytes = valid();
+    bytes[bytes.length - 6] = (bytes[bytes.length - 6] as number) ^ 0xff;
+    expect(catchError(() => readSkillArchive(bytes)).code).toBe('INTEGRITY');
+  });
+
+  it('accepts a gzip header with a file name and comment', () => {
+    const tar = new Uint8Array(gunzipSync(valid()));
+    const plain = gzip(tar);
+    const header = new Uint8Array(plain.subarray(0, 10));
+    header[3] = 0x08 | 0x10;
+    const withName = join(header, encode('pkg.tar\0note\0'), plain.subarray(10));
+    expect(readSkillArchive(withName).name).toBe('web-testing');
+  });
+
+  it('rejects non-zero padding after a tar entry', () => {
+    const tar = createTar([
+      { path: 'SKILL.md', content: encode(VALID_SKILL_MD) },
+      { path: 'agenthub.yaml', content: encode(VALID_MANIFEST) },
+    ]);
+    const end = 512 + encode(VALID_SKILL_MD).length;
+    tar[end] = 0x41;
+    expect(catchError(() => readSkillArchive(gzip(tar))).code).toBe('INTEGRITY');
+  });
+});
+
+describe('readSkillArchive: entry names', () => {
+  it.each([
+    '.agenthub/config.json',
+    'node_modules/x/index.js',
+    '.DS_Store',
+    'sub/Thumbs.db',
+    'desktop.ini',
+  ])('rejects the pack-excluded entry %s', (path) => {
+    const error = catchError(() =>
+      readSkillArchive(hostileArchive([{ path, content: encode('{}') }])),
+    );
+    expect(error.code).toBe('VALIDATION');
+    expect(issueCodes(error)).toEqual(['path.excluded']);
+  });
+
+  it('escapes control characters in the name of an unsupported entry', () => {
+    const name = 'evil\u001b[2J\u001b[31mFAKE\u009b';
+    const error = catchError(() =>
+      readSkillArchive(hostileArchive([{ path: name, content: new Uint8Array(), type: '2' }])),
+    );
+    expect(error.code).toBe('VALIDATION');
+    expect(hasControlChar(error.message)).toBe(false);
+    for (const issue of issuesOf(error)) expect(hasControlChar(issue.path ?? '')).toBe(false);
+    expect(error.message).toContain('\\u001b');
+  });
+
+  it('keeps a byte order mark in an entry name so it is rejected', () => {
+    const tar = createTar([
+      { path: 'SKILL.mdx', content: encode(VALID_SKILL_MD) },
+      { path: 'agenthub.yaml', content: encode(VALID_MANIFEST) },
+    ]);
+    rewriteHeader(tar, 0, (header) => {
+      header.fill(0, 0, 100);
+      header.set([0xef, 0xbb, 0xbf, ...encode('SKILL.md')], 0);
+    });
+    const error = catchError(() => readSkillArchive(gzip(tar)));
+    expect(error.code).toBe('VALIDATION');
+    expect(error.message).toMatch(/invisible/);
   });
 });
 

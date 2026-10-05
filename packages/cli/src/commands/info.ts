@@ -11,7 +11,7 @@ function permissionLines(version: SkillInfoVersion): string[] {
   const lines: string[] = [];
   if (p.network !== undefined) {
     lines.push(
-      `  network  ${Array.isArray(p.network) ? p.network.map(clean).join(', ') : String(p.network)}`,
+      `  network  ${Array.isArray(p.network) ? p.network.map(clean).join(', ') : clean(p.network)}`,
     );
   }
   if (p.exec?.length) lines.push(`  exec     ${p.exec.map(clean).join(', ')}`);
@@ -77,7 +77,7 @@ export async function infoCommand(ctx: CommandContext, name: string): Promise<Co
     if (!latest.requirements?.length) ctx.out.print('  none declared');
     for (const req of latest.requirements ?? []) {
       ctx.out.print(
-        `  ${req.kind} ${clean(req.name)}${req.constraint ? ` ${clean(req.constraint)}` : ''}`,
+        `  ${clean(req.kind)} ${clean(req.name)}${req.constraint ? ` ${clean(req.constraint)}` : ''}`,
       );
     }
     ctx.out.print();
@@ -86,7 +86,7 @@ export async function infoCommand(ctx: CommandContext, name: string): Promise<Co
       ctx.out.print('  no scan published');
     } else {
       ctx.out.print(
-        `  outcome ${latest.scan.outcome}  ${s.dim(`(scanner ${clean(latest.scan.scannerVersion)})`)}`,
+        `  outcome ${clean(latest.scan.outcome)}  ${s.dim(`(scanner ${clean(latest.scan.scannerVersion)})`)}`,
       );
       if (latest.scan.findings.length === 0) ctx.out.print('  no findings');
       for (const finding of latest.scan.findings) ctx.out.print(formatFinding(finding, s));

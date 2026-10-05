@@ -146,26 +146,42 @@ export async function exists(target: string): Promise<boolean> {
   return (await lstatOrNull(target)) !== null;
 }
 
+/** True when two paths name the same location lexically (case-insensitive on Windows). */
+export function samePath(a: string, b: string): boolean {
+  return comparable(a) === comparable(b);
+}
+
+/**
+ * UNC, device and `//host` paths (`\\server\share`, `\\?\…`, `\\.\…`, `//server/share`). Reading
+ * one makes Windows authenticate to whatever host it names, so they are never used.
+ */
+export function isNetworkPath(p: string): boolean {
+  return /^[\\/]{2}/.test(p);
+}
+
 /**
  * mkdir -p through the guard. Returns every directory it created, deepest first, so a failed
  * transaction can remove them again.
+ *
+ * The missing ancestors are found with lstat before creating anything: fs.mkdir's return value
+ * cannot be used for this, because on Windows it is a `\\?\`-prefixed path that never compares
+ * equal to the plain path (every ancestor up to the drive root would be reported as created).
  */
 export async function mkdirp(guard: WriteGuard, dir: string): Promise<string[]> {
   const target = path.resolve(dir);
   guard.assertCanCreateDir(target);
-  let first: string | undefined;
+  const missing: string[] = [];
+  for (let current = target; ; current = path.dirname(current)) {
+    if ((await lstatOrNull(current)) !== null) break;
+    missing.push(current);
+    if (path.dirname(current) === current) break;
+  }
   try {
-    first = await fs.mkdir(target, { recursive: true });
+    await fs.mkdir(target, { recursive: true });
   } catch (error) {
     throw ioError('create', target, error);
   }
-  if (first === undefined) return [];
-  const created: string[] = [];
-  for (let current = target; ; current = path.dirname(current)) {
-    created.push(current);
-    if (comparable(current) === comparable(first) || path.dirname(current) === current) break;
-  }
-  return created;
+  return missing;
 }
 
 /** Remove directories (deepest first) that are still empty; ignore the rest. */
@@ -424,9 +440,29 @@ export async function resolvesWithin(root: string, target: string): Promise<bool
       const real = await fs.realpath(current);
       return isWithin(realRoot, path.join(real, path.relative(current, resolved)));
     } catch {
+      // A dangling link may point anywhere once its target appears: never count it as inside.
+      const st = await fs.lstat(current).catch(() => null);
+      if (st?.isSymbolicLink()) return false;
       if (path.dirname(current) === current) return false;
     }
   }
+}
+
+/** Files operating systems drop into folders; never treated as hand edits. */
+const OS_JUNK = new Set(['.DS_Store', 'Thumbs.db', 'desktop.ini']);
+
+export function isOsJunk(file: string): boolean {
+  return OS_JUNK.has(file.slice(file.lastIndexOf('/') + 1));
+}
+
+/** `hashes` without OS junk files, except those that `keep` (e.g. the lock) lists itself. */
+export function withoutJunk(
+  hashes: Record<string, string>,
+  keep: Record<string, string> = {},
+): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(hashes).filter(([file]) => !isOsJunk(file) || Object.hasOwn(keep, file)),
+  );
 }
 
 /** Total size in bytes of the regular files under `dir` (0 when missing). Links not followed. */

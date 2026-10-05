@@ -17,7 +17,7 @@ import type {
   SkillInfo,
   SkillInfoVersion,
 } from './api';
-import { errnoCode } from './fsutil';
+import { errnoCode, isNetworkPath } from './fsutil';
 import { latestVersion } from './resolve';
 
 const revocationsSchema = z.array(
@@ -55,6 +55,14 @@ function requirementsOf(pkg: SkillPackage): SkillInfoVersion['requirements'] {
 }
 
 export function createFileRegistry(dir: string): RegistrySource {
+  // Reading a UNC/device path makes Windows authenticate to the host it names.
+  if (isNetworkPath(dir) || isNetworkPath(path.resolve(dir))) {
+    throw new AgentHubError(
+      'VALIDATION',
+      `the registry folder ${dir} is a network path; file: registries must be local folders`,
+      { path: dir },
+    );
+  }
   const root = path.resolve(dir);
   let cached: Promise<RegistryIndex> | null = null;
 

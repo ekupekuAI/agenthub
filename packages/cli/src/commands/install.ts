@@ -1,41 +1,38 @@
 import type { InstallRequest } from '@agenthub/core';
 import { AgentHubError } from '@agenthub/core';
 import type { CommandContext, CommandResult } from '../context';
-import { formatInstalled } from '../format';
-import { classifyTarget } from '../target';
+import { clean } from '../output';
+import { classifyTarget, shadowedLocalPath } from '../target';
 import { runPlan } from './plan-flow';
+import { restoreCommand } from './restore';
 
 export async function installCommand(
   ctx: CommandContext,
   target: string | undefined,
 ): Promise<CommandResult> {
+  if (target === undefined) return restoreCommand(ctx);
   const engine = await ctx.engine();
   const scope = await ctx.scope();
-
-  if (target === undefined) {
-    if (ctx.opts.dryRun) {
-      const listed = await engine.list(scope);
-      ctx.out.print(`dry run: would restore ${listed.length} skill(s) from the ${scope} lock`);
-      return { data: { dryRun: true, scope, skills: listed } };
-    }
-    ctx.devBanner();
-    const results = await engine.restore(scope, { dev: ctx.opts.dev, force: ctx.opts.force });
-    if (results.length === 0)
-      ctx.out.print(`Nothing to restore: the ${scope} lock lists no skills.`);
-    for (const result of results) ctx.out.lines(formatInstalled('Restored', result, ctx.out.style));
-    return { data: { scope, restored: results } };
-  }
 
   const source = await classifyTarget(target, { cwd: ctx.cwd });
   if (source.kind === 'registry') {
     const wiring = await ctx.wiring();
+    const local = await shadowedLocalPath(target, { cwd: ctx.cwd });
+    const localHint =
+      local === null ? '' : ` (to install the local folder, use "./${clean(source.name)}")`;
     if (wiring.registry === null) {
       throw new AgentHubError(
         'USAGE',
-        `no registry configured for "${target}" — run "agenthub config set registry <https://… | file:<folder>>" or set AGENTHUB_REGISTRY`,
+        `no registry configured for "${clean(target)}" — run "agenthub config set registry <https://… | file:<folder>>" or set AGENTHUB_REGISTRY${localHint}`,
+      );
+    }
+    if (local !== null) {
+      ctx.out.notice(
+        `note: installing "${clean(source.name)}" from the registry, not the folder ${clean(local)}${localHint}`,
       );
     }
     if (wiring.registryError !== undefined) throw wiring.registryError;
+    await ctx.registryNotice({ warnings: false });
   }
 
   ctx.devBanner();

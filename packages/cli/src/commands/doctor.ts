@@ -1,9 +1,23 @@
 import type { CommandContext, CommandResult } from '../context';
 import { displayPath, formatBytes, table } from '../format';
-import { clean } from '../output';
+import { asAgentHubError, clean } from '../output';
 
 export async function doctorCommand(ctx: CommandContext): Promise<CommandResult> {
-  const wiring = await ctx.wiring();
+  let wiring: Awaited<ReturnType<CommandContext['wiring']>>;
+  try {
+    wiring = await ctx.wiring();
+  } catch (error) {
+    // An invalid config file is something doctor reports, not a reason to say nothing.
+    const known = asAgentHubError(error);
+    if (known?.code !== 'VALIDATION' && known?.code !== 'IO') throw error;
+    const problems = [{ level: 'error' as const, code: 'config.invalid', message: known.message }];
+    ctx.out.print(ctx.out.style.bold('Problems'));
+    ctx.out.print(`  ${ctx.out.style.red('error  ')} config.invalid: ${clean(known.message)}`);
+    ctx.out.print(
+      '  fix the file by hand or with "agenthub config set|unset <key>" (-g for the user config)',
+    );
+    return { data: { problems }, exitCode: 1 };
+  }
   const report = await wiring.engine.doctor();
   const s = ctx.out.style;
   const home = wiring.paths.home;

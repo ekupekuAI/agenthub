@@ -1,6 +1,12 @@
 import type { DetectContext, RunResult } from '@agenthub/core';
 import { describe, expect, it } from 'vitest';
-import { DETECT_TIMEOUT_MS, detectAgents, getAdapter, parseVersion } from '../src/index';
+import {
+  claudeUserSkillsRelocation,
+  DETECT_TIMEOUT_MS,
+  detectAgents,
+  getAdapter,
+  parseVersion,
+} from '../src/index';
 
 const HOME = '/home/dev';
 
@@ -62,6 +68,19 @@ describe('parseVersion', () => {
   it('returns undefined when there is no version', () => {
     expect(parseVersion('')).toBeUndefined();
     expect(parseVersion('command not found')).toBeUndefined();
+  });
+
+  it('stays fast on a 1 MiB run of digits (no quadratic backtracking)', () => {
+    const started = performance.now();
+    expect(parseVersion('1'.repeat(1024 * 1024))).toBeUndefined();
+    expect(parseVersion(`${'1'.repeat(1024 * 1024)}.2`)).toBeUndefined();
+    expect(parseVersion('9'.repeat(200_000).split('').join(' '))).toBeUndefined();
+    expect(performance.now() - started).toBeLessThan(500);
+  });
+
+  it('only looks at the start of the output', () => {
+    expect(parseVersion(`${'x'.repeat(10_000)} 1.2.3`)).toBeUndefined();
+    expect(parseVersion('tool 1.2.3.4')).toBe('1.2.3');
   });
 });
 
@@ -142,8 +161,32 @@ describe('claude-code detection', () => {
     const env = await claude.detect(ctx);
     expect(env?.confidence).toBe('medium');
     expect(env?.executable).toBeUndefined();
-    expect(env?.evidence).toEqual(['found $CLAUDE_CONFIG_DIR (/cfg/claude)']);
+    expect(env?.evidence[0]).toBe('found $CLAUDE_CONFIG_DIR (/cfg/claude)');
     expect(ctx.runCalls).toEqual([]);
+  });
+
+  it('warns when CLAUDE_CONFIG_DIR moves the user skills folder away from ~/.claude', async () => {
+    const ctx = fakeContext({
+      env: { CLAUDE_CONFIG_DIR: '/cfg/claude' },
+      paths: ['/cfg/claude', '/home/dev/.claude'],
+    });
+    expect(claudeUserSkillsRelocation(ctx)).toEqual({
+      configDir: '/cfg/claude',
+      skillsDir: '/cfg/claude/skills',
+    });
+    const env = await claude.detect(ctx);
+    expect(env?.evidence).toContain(
+      '$CLAUDE_CONFIG_DIR moves the user skills folder to /cfg/claude/skills; user-scope installs to ~/.claude/skills are not loaded',
+    );
+  });
+
+  it('does not warn when CLAUDE_CONFIG_DIR is unset, relative or ~/.claude', async () => {
+    for (const value of [undefined, 'relative/dir', '~/.claude', '/home/dev/.claude/']) {
+      const ctx = fakeContext({ env: { CLAUDE_CONFIG_DIR: value }, paths: ['/home/dev/.claude'] });
+      expect(claudeUserSkillsRelocation(ctx), String(value)).toBeUndefined();
+      const env = await claude.detect(ctx);
+      expect(env?.evidence.some((line) => line.includes('moves'))).toBe(false);
+    }
   });
 
   it('is null without any evidence, even if which() throws', async () => {
@@ -256,7 +299,55 @@ describe('vscode detection', () => {
     const env = await vscode.detect(fakeContext(codeFound));
     expect(env?.confidence).toBe('medium');
     expect(env?.version).toBe('1.105.1');
-    expect(env?.evidence).toContain('no GitHub Copilot extension in ~/.vscode/extensions');
+    expect(env?.evidence).toContain('GitHub Copilot extension not found');
+  });
+
+  it('is high with Copilot Chat built into VS Code (per-commit layout)', async () => {
+    const env = await vscode.detect(
+      fakeContext({
+        executables: { code: '/opt/vscode/bin/code' },
+        runs: { '/opt/vscode/bin/code': ok('1.138.0\nabc\nx64\n') },
+        listings: {
+          '/opt/vscode': ['7debcd0e2a', 'bin', 'Code.exe'],
+          '/opt/vscode/7debcd0e2a/resources/app/extensions': ['git', 'copilot', 'npm'],
+        },
+      }),
+    );
+    expect(env?.confidence).toBe('high');
+    expect(env?.evidence).toContain(
+      'found built-in Copilot extension at /opt/vscode/7debcd0e2a/resources/app/extensions/copilot',
+    );
+  });
+
+  it('finds built-in Copilot in the flat and macOS layouts', async () => {
+    const flat = await vscode.detect(
+      fakeContext({
+        executables: { code: '/usr/share/code/bin/code' },
+        runs: { '/usr/share/code/bin/code': ok('1.138.0') },
+        listings: { '/usr/share/code/resources/app/extensions': ['copilot-chat'] },
+      }),
+    );
+    expect(flat?.confidence).toBe('high');
+    const app = '/Applications/Visual Studio Code.app/Contents/Resources/app';
+    const mac = await vscode.detect(
+      fakeContext({
+        executables: { code: `${app}/bin/code` },
+        runs: { [`${app}/bin/code`]: ok('1.138.0') },
+        listings: { [`${app}/extensions`]: ['copilot'] },
+      }),
+    );
+    expect(mac?.confidence).toBe('high');
+  });
+
+  it('does not take unrelated built-in extensions for Copilot', async () => {
+    const env = await vscode.detect(
+      fakeContext({
+        executables: { code: '/opt/vscode/bin/code' },
+        runs: { '/opt/vscode/bin/code': ok('1.138.0') },
+        listings: { '/opt/vscode/resources/app/extensions': ['copilot-labs', 'git'] },
+      }),
+    );
+    expect(env?.confidence).toBe('medium');
   });
 
   it('is medium when code --version fails, even with Copilot', async () => {

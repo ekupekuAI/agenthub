@@ -86,3 +86,12 @@ export function issuesOf(error: AgentHubError): ValidationIssue[] {
 export function issueCodes(error: AgentHubError): string[] {
   return issuesOf(error).map((issue) => issue.code);
 }
+
+/** True when the text holds a C0 or C1 control character (or DEL). */
+export function hasControlChar(text: string): boolean {
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    if (code < 0x20 || (code >= 0x7f && code <= 0x9f)) return true;
+  }
+  return false;
+}

@@ -1,7 +1,7 @@
 /**
  * Confirmation (design §8.3). On a terminal the prompt is [Y/n] without warnings and [y/N]
- * with warnings. Without a terminal, or with --json, a plan that needs confirmation requires
- * --yes.
+ * with warnings. Without a terminal, or with --json, --yes is required for every plan that
+ * would change something.
  */
 import { createInterface } from 'node:readline/promises';
 import type { InstallPlan } from '@agenthub/core';
@@ -52,16 +52,26 @@ export async function confirm(
   if (!agreed) throw new AgentHubError('CANCELLED', 'cancelled — nothing was changed');
 }
 
-/** One confirmation for an install or update plan. */
+/** True when applying the plan would write anything (not every target is unchanged). */
+export function planWrites(plan: Pick<InstallPlan, 'targets'>): boolean {
+  return plan.targets.length === 0 || plan.targets.some((target) => target.action !== 'unchanged');
+}
+
+/**
+ * One confirmation for an install or update plan. Without a terminal (or with --json) every
+ * plan that writes needs --yes. `caution` makes the terminal default "no" even without
+ * warnings (e.g. the skill's source registry changes).
+ */
 export function confirmPlan(
   plan: InstallPlan,
   question: string,
-  opts: ConfirmOptions,
+  opts: ConfirmOptions & { caution?: boolean },
 ): Promise<void> {
+  const { caution, ...rest } = opts;
   return confirm(question, {
-    ...opts,
-    defaultYes: !hasWarnings(plan),
-    required: plan.needsConfirmation,
+    ...rest,
+    defaultYes: !hasWarnings(plan) && !plan.dev && caution !== true,
+    required: plan.needsConfirmation || planWrites(plan) || plan.dev || caution === true,
   });
 }
 

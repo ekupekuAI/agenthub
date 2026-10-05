@@ -2,6 +2,8 @@
  * Human-readable rendering. Every value that came from a package, the registry or the disk
  * goes through `clean` before it is printed.
  */
+
+import { readersOf } from '@agenthub/adapters';
 import type { AgentId, EvaluatedFinding, InstallPlan, InstallResult, Scope } from '@agenthub/core';
 import { AGENT_IDS } from '@agenthub/core';
 import { clean, type Style } from './output';
@@ -128,6 +130,9 @@ export function formatPlan(
     const mark = ACTION_MARK[target.action] ?? '?';
     const flags: string[] = [target.action];
     if (target.unmanaged) flags.push('unmanaged folder');
+    // Every agent that loads skills from this folder, not only the ones selected.
+    const others = readersOf(plan.scope, target.dir).filter((id) => !target.agents.includes(id));
+    if (others.length > 0) flags.push(`also read by: ${agentList(others)}`);
     if (target.drift !== undefined && target.drift.length > 0) {
       flags.push(`modified: ${target.drift.map(clean).join(', ')}`);
     }
@@ -174,6 +179,13 @@ export function formatPlan(
       const where = issue.path ? ` (${clean(issue.path)})` : '';
       lines.push(`  ${style.yellow('!')} ${clean(issue.code)}: ${clean(issue.message)}${where}`);
     }
+  }
+
+  // Engine and CLI notes: --dev overrides, settings ignored or chosen by the project config,
+  // requirements that cannot be checked, skipped agents.
+  if (plan.hints.length > 0) {
+    lines.push('', style.bold('Notes'));
+    for (const hint of plan.hints) lines.push(`  - ${clean(hint)}`);
   }
 
   if (plan.blockers.length > 0) {

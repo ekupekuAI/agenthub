@@ -3,7 +3,15 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { AGENT_IDS } from '@agenthub/core';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { createNodeDetectContext, detectAgents, getAdapter, getEnvVar } from '../src/index';
+import {
+  createNodeDetectContext,
+  detectAgents,
+  getAdapter,
+  getEnvVar,
+  isFullyQualified,
+  pathExtensions,
+  searchPathEntries,
+} from '../src/index';
 
 const isWindows = process.platform === 'win32';
 
@@ -72,12 +80,74 @@ describe('createNodeDetectContext().which', () => {
     expect(await ctx.which('plain')).toBeNull();
   });
 
-  it('ignores empty and relative PATH entries', async () => {
-    const relative = path.relative(process.cwd(), bin);
-    // Across Windows drives there is no relative form; the empty entry still covers the rule.
-    const entries = path.isAbsolute(relative) ? [''] : ['', relative];
-    const ctx = createNodeDetectContext({ env: envWithPath(entries.join(path.delimiter)) });
-    expect(await ctx.which('tool')).toBeNull();
+  it('ignores empty and relative PATH entries even when the tool sits in the cwd', async () => {
+    // A lookup that kept '', '.' or 'bin' would resolve them against the cwd and find the tool.
+    const previous = process.cwd();
+    process.chdir(root);
+    try {
+      const ctx = createNodeDetectContext({
+        cwd: path.join(root, 'elsewhere'),
+        env: envWithPath(['', '.', 'bin', `.${path.sep}bin`].join(path.delimiter)),
+      });
+      expect(await ctx.which('tool')).toBeNull();
+    } finally {
+      process.chdir(previous);
+    }
+  });
+
+  it('skips PATH entries inside the project root, but still finds trusted ones', async () => {
+    const project = path.join(root, 'project-root');
+    const dotBin = path.join(project, 'node_modules', '.bin');
+    await mkdir(dotBin, { recursive: true });
+    await writeTool(dotBin, 'tool', 'tool 9.9.9');
+    const ctx = createNodeDetectContext({
+      projectRoot: project,
+      env: envWithPath([dotBin, bin].join(path.delimiter)),
+    });
+    expect(await ctx.which('tool')).toBe(toolPath);
+    expect(await ctx.which(path.join(dotBin, 'tool'))).toBeNull();
+  });
+
+  it("skips node_modules/.bin folders on the working directory's ancestor chain", async () => {
+    const mono = path.join(root, 'mono');
+    const pkg = path.join(mono, 'packages', 'app');
+    const dotBin = path.join(mono, 'node_modules', '.bin');
+    await mkdir(pkg, { recursive: true });
+    await mkdir(dotBin, { recursive: true });
+    await writeTool(dotBin, 'claude', '9.9.9');
+    const ctx = createNodeDetectContext({ cwd: pkg, env: envWithPath(dotBin) });
+    expect(await ctx.which('claude')).toBeNull();
+  });
+
+  it('treats a working directory at home as untrusted only for the folder itself', async () => {
+    const home = path.join(root, 'home-cwd');
+    const homeBin = path.join(home, '.local', 'bin');
+    await mkdir(homeBin, { recursive: true });
+    const homeTool = await writeTool(homeBin, 'hometool', 'hometool 1.0.0');
+    await writeTool(home, 'roottool', 'roottool 1.0.0');
+    const ctx = createNodeDetectContext({
+      home,
+      cwd: home,
+      env: envWithPath([home, homeBin].join(path.delimiter)),
+    });
+    expect(await ctx.which('hometool')).toBe(homeTool);
+    expect(await ctx.which('roottool')).toBeNull();
+  });
+
+  it.runIf(isWindows)('falls back to the default PATHEXT when PATHEXT is empty', async () => {
+    const env = envWithPath(bin);
+    for (const key of Object.keys(env)) if (key.toUpperCase() === 'PATHEXT') delete env[key];
+    env.PATHEXT = '';
+    expect(await createNodeDetectContext({ env }).which('tool')).toBe(toolPath);
+    env.PATHEXT = ' ; ;nonsense';
+    expect(await createNodeDetectContext({ env }).which('tool')).toBe(toolPath);
+  });
+
+  it.runIf(isWindows)('never accepts a drive-relative explicit path', async () => {
+    const ctx = createNodeDetectContext({ env: envWithPath(bin) });
+    const driveless = toolPath.slice(2); // '\Users\...\tool.cmd' resolves against the cwd drive
+    expect(await ctx.which(driveless)).toBeNull();
+    expect((await ctx.run(driveless, ['--version'], 5000)).code).toBeNull();
   });
 
   it.runIf(isWindows)('honors PATHEXT on Windows', async () => {
@@ -87,6 +157,53 @@ describe('createNodeDetectContext().which', () => {
     const ctx = createNodeDetectContext({ env });
     expect(await ctx.which('tool')).toBeNull();
     expect(await ctx.which('tool.cmd')).toBe(toolPath);
+  });
+});
+
+describe('PATH parsing helpers', () => {
+  it('searchPathEntries drops empty, relative and drive-relative entries on Windows', () => {
+    const raw = [
+      '',
+      '.',
+      'bin',
+      String.raw`\Tools\bin`,
+      '/usr/local/bin',
+      'C:relative',
+      String.raw` "C:\Quoted Dir" `,
+      String.raw`C:\ok`,
+      'D:/fwd',
+      String.raw`\\server\share\bin`,
+      String.raw`\\.\pipe\x`,
+    ].join(';');
+    expect(searchPathEntries(raw, 'win32')).toEqual([
+      String.raw`C:\Quoted Dir`,
+      String.raw`C:\ok`,
+      'D:/fwd',
+      String.raw`\\server\share\bin`,
+    ]);
+  });
+
+  it('searchPathEntries keeps only absolute entries on POSIX', () => {
+    expect(searchPathEntries(':.:bin:/usr/bin::./x:/opt/b', 'linux')).toEqual([
+      '/usr/bin',
+      '/opt/b',
+    ]);
+  });
+
+  it('isFullyQualified rejects rooted paths without a drive on Windows', () => {
+    expect(isFullyQualified(String.raw`\Tools\bin`, 'win32')).toBe(false);
+    expect(isFullyQualified('/Tools/bin', 'win32')).toBe(false);
+    expect(isFullyQualified('C:Tools', 'win32')).toBe(false);
+    expect(isFullyQualified(String.raw`C:\Tools`, 'win32')).toBe(true);
+    expect(isFullyQualified('/Tools/bin', 'linux')).toBe(true);
+  });
+
+  it('pathExtensions falls back to the defaults when PATHEXT is empty or unusable', () => {
+    const defaults = ['.com', '.exe', '.bat', '.cmd'];
+    expect(pathExtensions(undefined)).toEqual(defaults);
+    expect(pathExtensions('')).toEqual(defaults);
+    expect(pathExtensions(' ; ;nonsense;.')).toEqual(defaults);
+    expect(pathExtensions('.EXE;.Cmd')).toEqual(['.exe', '.cmd']);
   });
 });
 

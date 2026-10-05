@@ -38,14 +38,24 @@ export type Envelope = SuccessEnvelope | ErrorEnvelope;
 // Terminal-injection guard
 // ---------------------------------------------------------------------------
 
+/**
+ * Unicode format characters (bidi embeddings/overrides/isolates, zero-width characters, the
+ * BOM, soft hyphen, tag characters) can visually reorder or hide text on a terminal.
+ */
+const FORMAT_CHAR = /^\p{Cf}$/u;
+
 function isControl(code: number, keepNewlines: boolean): boolean {
   if (keepNewlines && (code === 0x0a || code === 0x09)) return false;
-  return code <= 0x1f || (code >= 0x7f && code <= 0x9f);
+  if (code <= 0x1f || (code >= 0x7f && code <= 0x9f)) return true;
+  // Line and paragraph separators break lines on some terminals.
+  if (code === 0x2028 || code === 0x2029) return true;
+  return code >= 0xad && FORMAT_CHAR.test(String.fromCodePoint(code));
 }
 
 /**
- * Removes C0 and C1 control characters (and DEL). Used on every string that came from a
- * package, a registry or the file system before it reaches a terminal.
+ * Removes C0 and C1 control characters, DEL, Unicode format characters and line separators.
+ * Used on every string that came from a package, a registry or the file system before it
+ * reaches a terminal.
  */
 export function stripControl(text: string, opts: { keepNewlines?: boolean } = {}): string {
   const keep = opts.keepNewlines === true;
@@ -66,13 +76,14 @@ const SGR = /^\[[0-9;]*m/;
 
 /**
  * Final pass over a human-readable line: keeps newlines, tabs and (when colors are on) our own
- * SGR color sequences; drops every other control character.
+ * SGR color sequences; drops every other control or format character.
  */
 export function sanitizeForTerminal(text: string, allowColor: boolean): string {
   let out = '';
   let index = 0;
   while (index < text.length) {
-    const code = text.charCodeAt(index);
+    const code = text.codePointAt(index) ?? 0;
+    const width = code > 0xffff ? 2 : 1;
     if (code === 0x1b && allowColor) {
       const match = SGR.exec(text.slice(index + 1, index + 16));
       if (match !== null) {
@@ -81,8 +92,8 @@ export function sanitizeForTerminal(text: string, allowColor: boolean): string {
         continue;
       }
     }
-    if (!isControl(code, true)) out += text[index];
-    index += 1;
+    if (!isControl(code, true)) out += text.slice(index, index + width);
+    index += width;
   }
   return out;
 }
@@ -132,15 +143,21 @@ export function errorEnvelope(command: string, error: unknown, verbose = false):
 }
 
 /**
- * Serializes an envelope. JSON.stringify already escapes C0 characters; DEL and C1 characters
- * are escaped too so raw bytes can never act as terminal controls.
+ * Serializes an envelope. JSON.stringify already escapes C0 characters; DEL, C1 and Unicode
+ * format characters are escaped too, so raw data can never act on a terminal that shows it.
  */
 export function toJson(envelope: Envelope): string {
   const raw = JSON.stringify(envelope, jsonReplacer, 2);
   let out = '';
   for (const char of raw) {
     const code = char.codePointAt(0) ?? 0;
-    out += code >= 0x7f && code <= 0x9f ? `\\u${code.toString(16).padStart(4, '0')}` : char;
+    if (code < 0x7f || !isControl(code, true)) {
+      out += char;
+      continue;
+    }
+    for (let i = 0; i < char.length; i += 1) {
+      out += `\\u${char.charCodeAt(i).toString(16).padStart(4, '0')}`;
+    }
   }
   return out;
 }

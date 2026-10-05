@@ -26,7 +26,12 @@ describe('loadConfig', () => {
   it('merges defaults < user < project < env < flags and records sources', async () => {
     await writeFile(
       join(agenthubHome, 'config.json'),
-      JSON.stringify({ registry: 'https://user.example', channel: 'beta', telemetry: true }),
+      JSON.stringify({
+        registry: 'https://user.example',
+        channel: 'beta',
+        telemetry: true,
+        trustedProjectRegistries: { [project]: ['file:../skills-dev'] },
+      }),
     );
     await writeFile(
       join(project, '.agenthub', 'config.json'),
@@ -46,6 +51,7 @@ describe('loadConfig', () => {
       channel: 'user',
       telemetry: 'user',
     });
+    expect(config.warnings).toEqual([]);
 
     const overridden = loadConfig({
       cwd: project,

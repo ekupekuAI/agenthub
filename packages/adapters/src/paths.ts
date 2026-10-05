@@ -24,8 +24,9 @@ export interface AgentPathEntry extends AgentPathTable {
 }
 
 export const AGENT_PATHS: Record<AgentId, AgentPathEntry> = {
-  // `CLAUDE_CONFIG_DIR` relocates the user-level folder. Detection treats it as evidence only;
-  // for the MVP, user-scope installs still target `~/.claude/skills` as listed here.
+  // `CLAUDE_CONFIG_DIR` relocates the user-level folder. For the MVP, user-scope installs still
+  // target `~/.claude/skills` as listed here; claudeUserSkillsRelocation() reports when that
+  // folder is not the one Claude Code reads, and detection says so in its evidence.
   'claude-code': {
     project: ['.claude/skills'],
     user: ['.claude/skills'],
@@ -65,23 +66,42 @@ export const AGENT_PATHS: Record<AgentId, AgentPathEntry> = {
 
 /**
  * Folders agenthub may write into, in preference order (design §7.2). The legacy Codex
- * folders are deliberately absent.
+ * folders are deliberately absent. Frozen: isWritableSkillsDir() relies on it.
  */
-export const WRITE_CANDIDATES: Record<Scope, string[]> = {
-  project: ['.agents/skills', '.claude/skills', '.cursor/skills', '.github/skills'],
-  user: ['.agents/skills', '.claude/skills', '.cursor/skills', '.copilot/skills'],
-};
+export const WRITE_CANDIDATES: Readonly<Record<Scope, readonly string[]>> = Object.freeze({
+  project: Object.freeze(['.agents/skills', '.claude/skills', '.cursor/skills', '.github/skills']),
+  user: Object.freeze(['.agents/skills', '.claude/skills', '.cursor/skills', '.copilot/skills']),
+});
 
 /**
- * Normalizes a skills folder for comparison with the table: forward slashes, no leading
- * `./`, no duplicate or trailing slashes. At user scope a leading `~/` is dropped.
- * Comparison stays case-sensitive, like the folders the agents look for.
+ * May agenthub write skills into `dir` at `scope`? Exact match only: `dir` must be one of
+ * WRITE_CANDIDATES[scope] spelled canonically (POSIX, relative to the project root or home,
+ * no `~/`, `./`, backslashes, padding or trailing slash). Legacy folders such as
+ * `.codex/skills` are never writable, even though some agents still read them.
+ *
+ * Use this, not an adapter's reads(), to validate any folder that will be written, in
+ * particular folders taken from a lock file, which is untrusted input.
+ */
+export function isWritableSkillsDir(scope: Scope, dir: string): boolean {
+  return WRITE_CANDIDATES[scope].includes(dir) && !isLegacySkillsDir(scope, dir);
+}
+
+/** Is `dir` (canonical spelling) a deprecated folder that agenthub must never write? */
+export function isLegacySkillsDir(scope: Scope, dir: string): boolean {
+  return Object.values(AGENT_PATHS).some((entry) => entry.legacy?.[scope].includes(dir) ?? false);
+}
+
+/**
+ * Normalizes a hand-typed skills folder for display and lookup: forward slashes, no leading
+ * `./`, no duplicate or trailing slashes; at user scope one leading `~/` is dropped.
+ * Comparison stays case-sensitive, like the folders the agents look for. Whitespace is kept
+ * (it is part of a folder name).
+ *
+ * This is deliberately lenient and must not be used to validate untrusted input: an adapter's
+ * reads() and isWritableSkillsDir() accept only the canonical spelling.
  */
 export function normalizeSkillsDir(scope: Scope, dir: string): string {
-  let out = dir
-    .trim()
-    .replace(/\\/g, '/')
-    .replace(/\/{2,}/g, '/');
+  let out = dir.replace(/\\/g, '/').replace(/\/{2,}/g, '/');
   if (scope === 'user' && out.startsWith('~/')) out = out.slice(2);
   while (out.startsWith('./')) out = out.slice(2);
   if (out.length > 1 && out.endsWith('/')) out = out.slice(0, -1);

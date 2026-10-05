@@ -1,5 +1,6 @@
 import type { CommandContext, CommandResult } from '../context';
 import { formatInstalled } from '../format';
+import { clean } from '../output';
 import { confirm } from '../prompt';
 import { assertSkillName } from './shared';
 
@@ -8,14 +9,16 @@ export async function rollbackCommand(ctx: CommandContext, name: string): Promis
   const engine = await ctx.engine();
   const scope = await ctx.scope();
   const current = (await engine.list(scope)).find((skill) => skill.name === name);
+  // The lock is a committed (untrusted) file: its version string is shown cleaned.
+  const currentVersion = current === undefined ? '' : clean(current.version);
   if (ctx.opts.dryRun) {
     ctx.out.print(
-      `dry run: would restore the previous snapshot of ${name}${current ? ` (currently ${current.version})` : ''} in the ${scope} scope`,
+      `dry run: would restore the previous snapshot of ${name}${current ? ` (currently ${currentVersion})` : ''} in the ${scope} scope`,
     );
     return { data: { dryRun: true, name, scope, current: current?.version ?? null } };
   }
   await confirm(
-    `Roll back ${name}${current ? ` ${current.version}` : ''} (${scope}) to its previous version?`,
+    `Roll back ${name}${current ? ` ${currentVersion}` : ''} (${scope}) to its previous version?`,
     { ...ctx.confirmOptions(), defaultYes: true, required: true },
   );
   const result = await engine.rollback(name, scope);

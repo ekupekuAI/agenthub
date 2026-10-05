@@ -10,6 +10,7 @@ import {
   AGENT_PATHS,
   duplicateAgents,
   getAdapter,
+  isWritableSkillsDir,
   PATH_TABLE_VERSION,
   selectTargetFolders,
 } from '@agenthub/adapters';
@@ -51,6 +52,7 @@ beforeEach(async () => {
       selectTargets: (scope, agents) => selectTargetFolders(scope, agents),
       duplicates: (scope, folders) => duplicateAgents(scope, folders),
       reads: (agent, scope, dir) => getAdapter(agent).reads(scope, dir),
+      isWritable: (scope, dir) => isWritableSkillsDir(scope, dir),
       reloadHint: (agent) => AGENT_PATHS[agent].reloadHint,
       tableVersion: PATH_TABLE_VERSION,
     },

@@ -1,6 +1,6 @@
 import { type AgentHubError, type AgentId, isAgentHubError, type Scope } from '@agenthub/core';
 import { describe, expect, it } from 'vitest';
-import { duplicateAgents, foldersReadBy, selectTargetFolders } from '../src/index';
+import { duplicateAgents, foldersReadBy, readersOf, selectTargetFolders } from '../src/index';
 
 const ALL: AgentId[] = ['claude-code', 'codex', 'cursor', 'vscode'];
 
@@ -11,7 +11,12 @@ const COVER_CASES: Array<{ agents: AgentId[]; dirs: string[]; duplicates: AgentI
   { agents: ['claude-code'], dirs: ['.claude/skills'], duplicates: [] },
   { agents: ['vscode'], dirs: ['.agents/skills'], duplicates: [] },
   { agents: ['codex'], dirs: ['.agents/skills'], duplicates: [] },
-  { agents: ['claude-code', 'codex'], dirs: ['.agents/skills', '.claude/skills'], duplicates: [] },
+  // Cursor and VS Code read both folders, so doctor would flag them: the plan must too.
+  {
+    agents: ['claude-code', 'codex'],
+    dirs: ['.agents/skills', '.claude/skills'],
+    duplicates: ['cursor', 'vscode'],
+  },
   { agents: ALL, dirs: ['.agents/skills', '.claude/skills'], duplicates: ['cursor', 'vscode'] },
 ];
 
@@ -59,6 +64,21 @@ describe.each(['project', 'user'] as Scope[])('selectTargetFolders (%s scope)', 
   it('throws USAGE for an unknown agent id', () => {
     expect(() => selectTargetFolders(scope, ['windsurf' as AgentId])).toThrowError(/Unknown agent/);
   });
+
+  it('refuses the legacy codex folder and any other non-writable candidate', () => {
+    for (const bad of ['.codex/skills', '.evil/skills', ' .claude/skills', './.agents/skills']) {
+      let caught: unknown;
+      try {
+        selectTargetFolders(scope, ['cursor'], [bad]);
+      } catch (error) {
+        caught = error;
+      }
+      expect(isAgentHubError(caught), bad).toBe(true);
+      expect((caught as AgentHubError).code).toBe('USAGE');
+    }
+    // Even when no agent is selected: the candidate list itself is invalid.
+    expect(() => selectTargetFolders(scope, [], ['.codex/skills'])).toThrowError(/not a/);
+  });
 });
 
 describe('smallest cover tie-break', () => {
@@ -79,7 +99,25 @@ describe('smallest cover tie-break', () => {
   });
 });
 
+describe('readersOf', () => {
+  it('lists every agent that loads a folder, selected or not', () => {
+    expect(readersOf('project', '.claude/skills')).toEqual(['claude-code', 'cursor', 'vscode']);
+    expect(readersOf('project', '.agents/skills')).toEqual(['codex', 'cursor', 'vscode']);
+    expect(readersOf('user', '.copilot/skills')).toEqual(['vscode']);
+    expect(readersOf('project', '.codex/skills')).toEqual(['cursor']);
+    expect(readersOf('project', ' .claude/skills')).toEqual([]);
+  });
+});
+
 describe('duplicateAgents', () => {
+  it('considers unselected agents by default, like doctor, and can be narrowed', () => {
+    const folders = selectTargetFolders('project', ['claude-code', 'codex']);
+    expect(duplicateAgents('project', folders)).toEqual(['cursor', 'vscode']);
+    expect(duplicateAgents('project', folders, ['claude-code', 'codex', 'cursor'])).toEqual([
+      'cursor',
+    ]);
+  });
+
   it('reports agents that read more than one written folder', () => {
     const folders = [
       { dir: '.agents/skills', agents: ['cursor'] as AgentId[] },

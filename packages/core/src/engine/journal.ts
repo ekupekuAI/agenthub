@@ -37,6 +37,9 @@ export interface Journal {
   previousLockText: string | null;
   newEntry: LockEntry | null;
   startedAt: string;
+  /** Process that runs the transaction; recover() leaves journals of live processes alone. */
+  pid?: number;
+  host?: string;
 }
 
 const journalSchema = z.object({
@@ -60,6 +63,8 @@ const journalSchema = z.object({
   previousLockText: z.string().nullable(),
   newEntry: lockEntrySchema.nullable(),
   startedAt: z.string(),
+  pid: z.number().int().positive().optional(),
+  host: z.string().optional(),
 });
 
 export function newTxid(now: Date = new Date()): string {

@@ -1,7 +1,10 @@
+import { Buffer } from 'node:buffer';
 import semver from 'semver';
 import { z } from 'zod';
 import { AgentHubError } from './errors';
-import { errorMessage, isPlainObject, parseYamlSafe, stripBom } from './safe-yaml';
+import { YAML_LIMITS } from './limits';
+import { escapeUnsafeChars } from './paths';
+import { errorMessage, findHiddenChars, isPlainObject, parseYamlSafe, stripBom } from './safe-yaml';
 import type { SkillManifest, ValidationIssue } from './types';
 import { AGENT_IDS } from './types';
 
@@ -92,11 +95,13 @@ export function validateManifest(
     return { ok: true, manifest };
   }
   const issues = result.error.issues.map((issue): ValidationIssue => {
-    const path = formatPath(issue.path);
+    // Keys and messages can echo untrusted input (e.g. an unrecognized key): escape them.
+    const path = escapeUnsafeChars(formatPath(issue.path));
+    const text = escapeUnsafeChars(issue.message);
     return {
       level: 'error',
       code: `manifest.${issue.code}`,
-      message: path === '' ? issue.message : `${path}: ${issue.message}`,
+      message: path === '' ? text : `${path}: ${text}`,
       path: path === '' ? MANIFEST_FILE : path,
     };
   });
@@ -108,9 +113,21 @@ export function validateManifest(
  * `details.issues` listing every problem (path such as `requires.runtimes.node`).
  */
 export function parseManifest(text: string): SkillManifest {
+  const source = stripBom(text);
+  const bytes = Buffer.byteLength(source, 'utf8');
+  if (bytes > YAML_LIMITS.maxBytes) {
+    invalid([
+      {
+        level: 'error',
+        code: 'manifest.too-large',
+        message: `is ${bytes} bytes; the limit is ${YAML_LIMITS.maxBytes}`,
+        path: MANIFEST_FILE,
+      },
+    ]);
+  }
   let data: unknown;
   try {
-    data = parseYamlSafe(stripBom(text));
+    data = parseYamlSafe(source);
   } catch (cause) {
     const message = `not valid YAML: ${errorMessage(cause)}`;
     invalid([{ level: 'error', code: 'manifest.yaml', message, path: MANIFEST_FILE }]);
@@ -125,7 +142,16 @@ export function parseManifest(text: string): SkillManifest {
       },
     ]);
   }
+  const hidden = findHiddenChars(data).map(
+    ({ path, char }): ValidationIssue => ({
+      level: 'error',
+      code: 'manifest.hidden-char',
+      message: `${path}: contains the control or invisible character ${char}`,
+      path,
+    }),
+  );
   const result = validateManifest(data);
-  if (!result.ok) invalid(result.issues);
+  if (!result.ok) invalid([...hidden, ...result.issues]);
+  if (hidden.length > 0) invalid(hidden);
   return result.manifest;
 }

@@ -3,6 +3,7 @@
  * plus restore, remove, verify, list, update checks, rollback, crash recovery and doctor.
  */
 import fs from 'node:fs/promises';
+import { hostname } from 'node:os';
 import path from 'node:path';
 import semver from 'semver';
 import { packSkill, readSkillArchive } from '../archive';
@@ -37,10 +38,11 @@ import type {
   RegistryVersion,
   RemoveResult,
   RequirementCheck,
+  RestoreOptions,
   UpdateCandidate,
   VerifyReport,
 } from './api';
-import { type LoadedConfig, loadConfig } from './config';
+import { type LoadedConfig, loadConfig, sameRegistry } from './config';
 import { createFileRegistry } from './file-registry';
 import * as fsu from './fsutil';
 import { WriteGuard } from './fsutil';
@@ -53,12 +55,24 @@ import {
   readJournals,
   writeJournal,
 } from './journal';
-import { emptyLock, parseLock, parseLockEntry, readLock, sortKeysDeep, writeLock } from './lock';
+import {
+  emptyLock,
+  parseLock,
+  parseLockEntry,
+  readLock,
+  serializeLock,
+  sortKeysDeep,
+  writeLock,
+} from './lock';
+import { acquireProcessLock, ownerAlive } from './proclock';
 import { latestVersion, resolveVersion } from './resolve';
 import {
+  assertProjectStateSafe,
   ensureStateGitignore,
   findProjectRoot,
+  LOCK_FILE,
   lockFilePath,
+  STATE_DIR,
   type StateLocations,
   scopeId,
   scopeStateDir,
@@ -100,6 +114,8 @@ interface BuildPlanInput {
   action?: 'rollback';
   archiveDigest?: string;
   hints?: string[];
+  /** Blockers found before planning (registry checks of restore / rollback). */
+  blockers?: Blocker[];
 }
 
 interface TargetState {
@@ -153,6 +169,20 @@ function describeBlock(policy: PolicyResult): string {
   return `blocked by policy: ${list}`;
 }
 
+/** Why a plan needs confirmation, for messages. */
+function describeConfirmation(plan: InstallPlan): string {
+  const reasons: string[] = [];
+  const warns = plan.policy.findings.filter((f) => f.decision === 'WARN').map((f) => f.ruleId);
+  if (warns.length > 0) reasons.push(`findings to review: ${[...new Set(warns)].join(', ')}`);
+  else if (plan.policy.outcome !== 'allow') reasons.push(`policy outcome ${plan.policy.outcome}`);
+  if (plan.dev && plan.hints.some((hint) => hint.startsWith('--dev:'))) {
+    reasons.push('--dev overrides BLOCK findings');
+  }
+  const replaced = plan.targets.filter((t) => t.action === 'replace').map((t) => t.lockPath);
+  if (replaced.length > 0) reasons.push(`replaces ${replaced.join(', ')}`);
+  return reasons.join('; ') || 'confirmation required';
+}
+
 const BLOCKER_CODES = {
   POLICY_BLOCKED: 'POLICY_BLOCKED',
   INCOMPATIBLE: 'INCOMPATIBLE',
@@ -170,11 +200,20 @@ function blockerError(plan: InstallPlan): AgentHubError | null {
   });
 }
 
-/** Files operating systems drop into folders; never treated as hand edits that block an update. */
-const OS_JUNK = new Set(['.DS_Store', 'Thumbs.db', 'desktop.ini']);
+type Blocker = InstallPlan['blockers'][number];
 
-function isOsJunk(file: string): boolean {
-  return OS_JUNK.has(file.slice(file.lastIndexOf('/') + 1));
+/**
+ * Same version by semver precedence for valid versions (so a lock label such as `1.3.0+x` or
+ * `v1.3.0` still matches the registry's 1.3.0 and its status), else exact text.
+ */
+function sameVersion(a: string, b: string): boolean {
+  if (semver.valid(a) !== null && semver.valid(b) !== null) return semver.eq(a, b);
+  return a === b;
+}
+
+/** Hashes of an installed folder with OS junk files (.DS_Store, …) left out. */
+async function hashSkillDir(absDir: string, keep: Record<string, string> = {}) {
+  return fsu.withoutJunk(await fsu.hashInstalledDir(absDir), keep);
 }
 
 function isSafeVersionName(version: string): boolean {
@@ -220,14 +259,27 @@ class InstallEngine implements Engine {
     return this.projectRoot;
   }
 
+  /** Scope state folder; for project scope it is checked for links first (it is committed). */
   private stateDir(scope: Scope): string {
-    this.scopeRoot(scope);
-    return scopeStateDir(scope, this.loc);
+    const root = this.scopeRoot(scope);
+    const dir = scopeStateDir(scope, this.loc);
+    if (scope === 'project') assertProjectStateSafe(root);
+    return dir;
   }
 
   private lockFile(scope: Scope): string {
-    this.scopeRoot(scope);
+    this.stateDir(scope);
     return lockFilePath(scope, this.loc);
+  }
+
+  /** Run `fn` holding the machine-wide process lock (one changing agenthub at a time). */
+  private async exclusive<T>(fn: () => Promise<T>): Promise<T> {
+    const release = await acquireProcessLock(this.deps.agenthubHome, { now: this.now });
+    try {
+      return await fn();
+    } finally {
+      await release?.().catch(() => undefined);
+    }
   }
 
   private scopes(): Scope[] {
@@ -248,6 +300,22 @@ class InstallEngine implements Engine {
     lockPath: string,
     name: string,
   ): { dir: string; absDir: string } {
+    return this.checkLockPath(scope, this.scopeRoot(scope), lockPath, name);
+  }
+
+  /** Whether agenthub may write skills into `dir` at `scope` (AgentPort.isWritable). */
+  private isWritable(scope: Scope, dir: string): boolean {
+    const port = this.deps.agents;
+    return port.isWritable === undefined || port.isWritable(scope, dir);
+  }
+
+  /** resolveLockPath against an explicit scope root (journals of other projects). */
+  private checkLockPath(
+    scope: Scope,
+    root: string,
+    lockPath: string,
+    name: string,
+  ): { dir: string; absDir: string } {
     const fail = (why: string): never => {
       throw new AgentHubError('VALIDATION', `invalid lock path "${lockPath}" for ${name}: ${why}`, {
         lockPath,
@@ -263,7 +331,14 @@ class InstallEngine implements Engine {
     const segments = rel.split('/');
     if (segments.length < 2) fail('expected <skills folder>/<name>');
     for (const segment of segments) {
-      if (segment === '' || segment === '.' || segment === '..' || /[\\:\0]/.test(segment)) {
+      if (
+        segment === '' ||
+        segment === '.' ||
+        segment === '..' ||
+        segment !== segment.trim() ||
+        // biome-ignore lint/suspicious/noControlCharactersInRegex: control characters are refused
+        /[\\:\0-\x1f\x7f]/.test(segment)
+      ) {
         fail(`unsafe segment "${segment}"`);
       }
     }
@@ -272,24 +347,37 @@ class InstallEngine implements Engine {
     if (!AGENT_IDS.some((agent) => this.deps.agents.reads(agent, scope, dir))) {
       fail(`${dir} is not a skills folder any supported agent reads`);
     }
-    const root = this.scopeRoot(scope);
+    if (!this.isWritable(scope, dir)) fail(`${dir} is not a folder agenthub installs into`);
     const absDir = path.join(root, ...segments);
     if (!fsu.isWithin(root, absDir)) fail('outside the scope root');
     return { dir, absDir };
   }
 
-  private config(): LoadedConfig {
+  /** Configuration as seen by an operation at `scope`: user scope never reads project config. */
+  private config(scope?: Scope): LoadedConfig {
     return loadConfig({
       cwd: this.deps.cwd,
       home: this.deps.home,
       agenthubHome: this.deps.agenthubHome,
       env: process.env,
+      ...(scope === undefined ? {} : { scope }),
     });
   }
 
-  private registryOrNull(): RegistrySource | null {
+  /**
+   * The registry for an operation at `scope`. A registry chosen by the project config (only
+   * possible when the user trusted it for this project) is never used for user-scope operations.
+   */
+  private registryOrNull(scope: Scope): RegistrySource | null {
+    const full = this.config();
+    if (scope === 'user' && full.sources.registry === 'project') {
+      throw new AgentHubError(
+        'USAGE',
+        `the registry ${full.effective.registry} comes from the project config ${full.projectConfigPath}; user-scope (-g) commands only use the registry from your user config or AGENTHUB_REGISTRY — run the command outside the project`,
+      );
+    }
     if (this.deps.registry) return this.deps.registry;
-    const configured = this.config().effective.registry;
+    const configured = full.effective.registry;
     if (!configured) return null;
     if (configured.startsWith('file:')) {
       if (this.fileRegistry?.id !== configured) {
@@ -306,8 +394,21 @@ class InstallEngine implements Engine {
     );
   }
 
-  private registry(): RegistrySource {
-    const registry = this.registryOrNull();
+  /** Hints about where the registry setting came from, for plans. */
+  private configHints(scope: Scope): string[] {
+    if (scope === 'user') return [];
+    const config = this.config();
+    const hints = [...config.warnings];
+    if (config.sources.registry === 'project') {
+      hints.push(
+        `the registry ${config.effective.registry} is set by the project config ${config.projectConfigPath} (trusted in your user config)`,
+      );
+    }
+    return hints;
+  }
+
+  private registry(scope: Scope): RegistrySource {
+    const registry = this.registryOrNull(scope);
     if (registry === null) {
       throw new AgentHubError(
         'USAGE',
@@ -349,7 +450,7 @@ class InstallEngine implements Engine {
 
   async plan(req: InstallRequest): Promise<InstallPlan> {
     const scopeRoot = this.scopeRoot(req.scope);
-    const config = this.config();
+    const config = this.config(req.scope);
     const channel = req.channel ?? config.effective.channel ?? 'stable';
     const detected = await this.deps.agents.detect();
 
@@ -381,6 +482,7 @@ class InstallEngine implements Engine {
     const dev = req.dev ?? false;
     const force = req.force ?? false;
     const source = req.source;
+    const hints = this.configHints(req.scope);
 
     if (source.kind === 'dir') {
       const abs = path.resolve(this.deps.cwd, source.path);
@@ -395,6 +497,7 @@ class InstallEngine implements Engine {
         detected,
         dev,
         force,
+        hints,
       });
     }
 
@@ -420,10 +523,11 @@ class InstallEngine implements Engine {
         dev,
         force,
         archiveDigest: archiveDigest(bytes),
+        hints,
       });
     }
 
-    const registry = this.registry();
+    const registry = this.registry(req.scope);
     const versions = await registry.listVersions(source.name);
     const outcome = resolveVersion(versions, {
       ...(source.range === undefined ? {} : { range: source.range }),
@@ -454,6 +558,7 @@ class InstallEngine implements Engine {
       dev,
       force,
       archiveDigest: archive,
+      hints,
     });
   }
 
@@ -465,34 +570,61 @@ class InstallEngine implements Engine {
     scopeRoot: string,
     agents: AgentEnvironment[],
   ): Promise<InstallPlan> {
-    const lock = await readLock(this.lockFile(req.scope));
-    const previous = own(lock.skills, name);
     const reason = version.revokedReason ? `: ${version.revokedReason}` : '';
-    return {
-      id: newTxid(this.now()),
-      skill: {
-        name,
-        version: version.version,
-        digest: version.digest,
-        ...(version.archiveDigest ? { archiveDigest: version.archiveDigest } : {}),
-      },
+    return this.stubPlan({
+      name,
+      skill: version,
       source,
       scope: req.scope,
       scopeRoot,
       agents,
+      blockers: [
+        { code: 'REVOKED', message: `version ${version.version} of ${name} is revoked${reason}` },
+      ],
+      hints: [],
+      dev: req.dev ?? false,
+      force: req.force ?? false,
+    });
+  }
+
+  /** A plan that can never be applied (it has blockers and no package behind it). */
+  private async stubPlan(args: {
+    name: string;
+    skill: Pick<RegistryVersion, 'version' | 'digest' | 'archiveDigest'>;
+    source: InstallPlan['source'];
+    scope: Scope;
+    scopeRoot: string;
+    agents: AgentEnvironment[];
+    blockers: Blocker[];
+    hints: string[];
+    dev: boolean;
+    force: boolean;
+  }): Promise<InstallPlan> {
+    const lock = await readLock(this.lockFile(args.scope));
+    const previous = own(lock.skills, args.name);
+    return {
+      id: newTxid(this.now()),
+      skill: {
+        name: args.name,
+        version: args.skill.version,
+        digest: args.skill.digest,
+        ...(args.skill.archiveDigest ? { archiveDigest: args.skill.archiveDigest } : {}),
+      },
+      source: args.source,
+      scope: args.scope,
+      scopeRoot: args.scopeRoot,
+      agents: args.agents,
       targets: [],
       duplicates: [],
       policy: { findings: [], outcome: 'allow' },
       requirements: [],
       issues: [],
-      blockers: [
-        { code: 'REVOKED', message: `version ${version.version} of ${name} is revoked${reason}` },
-      ],
+      blockers: args.blockers,
       needsConfirmation: false,
-      hints: [],
+      hints: args.hints,
       ...(previous ? { previous } : {}),
-      dev: req.dev ?? false,
-      force: req.force ?? false,
+      dev: args.dev,
+      force: args.force,
     };
   }
 
@@ -564,11 +696,16 @@ class InstallEngine implements Engine {
     };
   }
 
+  /**
+   * What applying `pkg` does to one target folder. 'unchanged' only when the folder on disk holds
+   * exactly the package's files (the package that was scanned); drift is reported against the
+   * lock (hand edits since the last install).
+   */
   private async inspectTarget(
     absDir: string,
     lockPath: string,
     previous: LockEntry | undefined,
-    digest: string,
+    pkg: Pick<SkillPackage, 'digest' | 'fileHashes'>,
   ): Promise<TargetState> {
     const kind = await fsu.pathKind(absDir);
     if (kind === 'missing') return { action: 'create' };
@@ -576,12 +713,18 @@ class InstallEngine implements Engine {
     if (previous === undefined || !Object.hasOwn(previous.paths, lockPath)) {
       return { action: 'replace', unmanaged: true };
     }
+    const actual = await hashSkillDir(absDir, previous.files);
     const drift = fsu
-      .diffFiles(previous.files, await fsu.hashInstalledDir(absDir))
+      .diffFiles(previous.files, actual)
       .filter((status) => status.status !== 'ok')
-      .filter((status) => !(status.status === 'extra' && isOsJunk(status.path)))
       .map((status) => status.path);
-    if (drift.length === 0 && previous.digest === digest) return { action: 'unchanged' };
+    if (
+      drift.length === 0 &&
+      previous.digest === pkg.digest &&
+      sameRecord(fsu.withoutJunk(actual, pkg.fileHashes), pkg.fileHashes)
+    ) {
+      return { action: 'unchanged' };
+    }
     return drift.length > 0 ? { action: 'replace', drift } : { action: 'replace' };
   }
 
@@ -591,7 +734,20 @@ class InstallEngine implements Engine {
     const lock = await readLock(this.lockFile(scope));
     const previous = own(lock.skills, pkg.name);
     const hints = [...(input.hints ?? [])];
-    const blockers: InstallPlan['blockers'] = [];
+    const blockers: InstallPlan['blockers'] = [...(input.blockers ?? [])];
+
+    // A registry install never silently switches a skill to another registry.
+    if (
+      previous?.source === 'registry' &&
+      input.lockSource === 'registry' &&
+      !sameRegistry(previous.registry, input.registry) &&
+      !input.force
+    ) {
+      blockers.push({
+        code: 'CONFLICT',
+        message: `${pkg.name} was installed from ${previous.registry ?? 'an unknown registry'}, not ${input.registry} — use --force to switch registries`,
+      });
+    }
 
     // Agents and folders.
     let selected = input.agents;
@@ -663,7 +819,7 @@ class InstallEngine implements Engine {
     for (const [dir, agents] of folders) {
       const lockPath = this.lockPathFor(scope, dir, pkg.name);
       const { absDir } = this.resolveLockPath(scope, lockPath, pkg.name);
-      const state = await this.inspectTarget(absDir, lockPath, previous, pkg.digest);
+      const state = await this.inspectTarget(absDir, lockPath, previous, pkg);
       const target: PlannedTarget = { dir, absDir, lockPath, agents, action: state.action };
       if (state.drift) target.drift = state.drift;
       if (state.unmanaged) target.unmanaged = true;
@@ -770,7 +926,13 @@ class InstallEngine implements Engine {
       pkg = readSkillArchive(new Uint8Array(await fs.readFile(source.path)));
       lockSource = 'file';
     } else {
-      const reg = this.registry();
+      const reg = this.registry(plan.scope);
+      if (source.registry !== undefined && !sameRegistry(source.registry, reg.id)) {
+        throw new AgentHubError(
+          'CONFLICT',
+          `the plan for ${plan.skill.name} was made against ${source.registry}, but the configured registry is ${reg.id}`,
+        );
+      }
       pkg = (
         await this.downloadVerified(reg, plan.skill.name, {
           version: plan.skill.version,
@@ -800,6 +962,13 @@ class InstallEngine implements Engine {
   // -------------------------------------------------------------------------
 
   async apply(plan: InstallPlan): Promise<InstallResult> {
+    const blocked = blockerError(plan);
+    if (blocked) throw blocked;
+    return this.exclusive(() => this.applyLocked(plan));
+  }
+
+  /** apply() for callers that already hold the process lock. */
+  private async applyLocked(plan: InstallPlan): Promise<InstallResult> {
     const blocked = blockerError(plan);
     if (blocked) throw blocked;
     const internals = INTERNALS.get(plan) ?? (await this.rehydrate(plan));
@@ -853,7 +1022,7 @@ class InstallEngine implements Engine {
           `${target.lockPath} resolves outside the project through a symlinked folder`,
         );
       }
-      const state = await this.inspectTarget(target.absDir, target.lockPath, previous, pkg.digest);
+      const state = await this.inspectTarget(target.absDir, target.lockPath, previous, pkg);
       const changed =
         state.action !== target.action ||
         (state.unmanaged ?? false) !== (target.unmanaged ?? false) ||
@@ -1039,6 +1208,8 @@ class InstallEngine implements Engine {
       previousLockText: args.previousLockText,
       newEntry,
       startedAt: this.now().toISOString(),
+      pid: process.pid,
+      host: hostname(),
     };
     const steps: {
       target: PlannedTarget;
@@ -1102,7 +1273,8 @@ class InstallEngine implements Engine {
       journal.committed = true;
       await writeJournal(guard, home, journal);
     } catch (error) {
-      const problems = await this.undoTransaction(guard, journal);
+      if (this.deps.hooks?.simulateCrash) throw error;
+      const problems = await this.undoTransaction(guard, journal, false);
       if (problems.length > 0) {
         throw new AgentHubError(
           'IO',
@@ -1148,6 +1320,12 @@ class InstallEngine implements Engine {
         `${target.lockPath}/SKILL.md is invalid after install: ${errors[0]?.message ?? `name is not ${folderName}`}`,
       );
     }
+    if (!this.isWritable(scope, target.dir)) {
+      throw new AgentHubError(
+        'VALIDATION',
+        `${target.dir} is not a folder agenthub installs into at ${scope} scope`,
+      );
+    }
     for (const agent of target.agents) {
       if (!this.deps.agents.reads(agent, scope, target.dir)) {
         throw new AgentHubError(
@@ -1158,18 +1336,37 @@ class InstallEngine implements Engine {
     }
   }
 
-  /** Undo a transaction in reverse. Returns problems; the journal is kept when any remain. */
-  private async undoTransaction(guard: WriteGuard, journal: Journal): Promise<string[]> {
+  /**
+   * Undo a transaction in reverse. Returns problems; the journal is kept when any remain.
+   * Progress is written back to the journal after every step, so undoing the same journal again
+   * (an interrupted undo, a later recover()) never repeats a step that already happened.
+   * `fromRecovery`: the journal comes from disk, so nothing is deleted unless its contents prove
+   * it is the copy this transaction installed.
+   */
+  private async undoTransaction(
+    guard: WriteGuard,
+    journal: Journal,
+    fromRecovery: boolean,
+  ): Promise<string[]> {
     const problems: string[] = [];
+    const home = this.deps.agenthubHome;
+    const persist = await fsu.exists(journalFile(home, journal.txid));
     for (const step of [...journal.steps].reverse()) {
       try {
-        await this.undoStep(guard, step);
+        await this.undoStep(guard, journal, step, fromRecovery);
       } catch (error) {
         problems.push(`${step.absDir}: ${errorText(error)}`);
       }
+      if (persist) {
+        try {
+          await writeJournal(guard, home, journal);
+        } catch (error) {
+          problems.push(`${journalFile(home, journal.txid)}: ${errorText(error)}`);
+        }
+      }
     }
     try {
-      await this.restoreLockText(guard, journal);
+      await this.restoreLockEntry(guard, journal);
     } catch (error) {
       problems.push(`${journal.lockFile}: ${errorText(error)}`);
     }
@@ -1183,15 +1380,45 @@ class InstallEngine implements Engine {
     }
     const created = [...new Set(journal.createdDirs)].sort((a, b) => b.length - a.length);
     await fsu.removeEmptyDirs(guard, created);
-    if (problems.length === 0) await deleteJournal(guard, this.deps.agenthubHome, journal.txid);
+    if (problems.length === 0) await deleteJournal(guard, home, journal.txid);
     return problems;
   }
 
-  private async undoStep(guard: WriteGuard, step: JournalStep): Promise<void> {
-    const stagedGone = step.staged !== undefined && !(await fsu.exists(step.staged));
-    const newInPlace = step.swapped || (stagedGone && (await fsu.exists(step.absDir)));
-    if (newInPlace) await fsu.removeTree(guard, step.absDir);
-    if (step.backup !== undefined && (await fsu.exists(step.backup))) {
+  /**
+   * Put one target back: remove the new copy if it is (provably) there, then move the parked
+   * previous folder back. Marks the step undone in the journal object.
+   */
+  private async undoStep(
+    guard: WriteGuard,
+    journal: Journal,
+    step: JournalStep,
+    fromRecovery: boolean,
+  ): Promise<void> {
+    const kind = await fsu.pathKind(step.absDir);
+    const backupExists = step.backup !== undefined && (await fsu.exists(step.backup));
+    const stagedExists = step.staged !== undefined && (await fsu.exists(step.staged));
+    if (kind !== 'missing') {
+      // The folder at absDir can only be the new copy when the previous one was parked (replace)
+      // or the staged copy has left staging (create).
+      const mayBeNew = step.backup !== undefined ? backupExists : step.swapped || !stagedExists;
+      let isNew = false;
+      if (mayBeNew) {
+        if (!fromRecovery && step.swapped) isNew = true;
+        else if (kind === 'dir' && journal.newEntry !== null) {
+          const files = journal.newEntry.files;
+          isNew = sameRecord(await hashSkillDir(step.absDir, files), files);
+        }
+      }
+      if (isNew) await fsu.removeTree(guard, step.absDir);
+      else if (backupExists) {
+        throw new AgentHubError(
+          'CONFLICT',
+          `cannot move the previous copy back: ${step.absDir} exists and is not the copy agenthub installed (the previous copy is in ${step.backup})`,
+        );
+      }
+    }
+    step.swapped = false;
+    if (step.backup !== undefined && backupExists) {
       if (await fsu.exists(step.absDir)) {
         throw new AgentHubError(
           'CONFLICT',
@@ -1200,25 +1427,49 @@ class InstallEngine implements Engine {
       }
       await fsu.renameWithRetry(guard, step.backup, step.absDir);
     }
+    if (step.backup !== undefined && !(await fsu.exists(step.backup))) delete step.backup;
   }
 
-  /** Put the lock back to its pre-transaction bytes if this transaction changed it. */
-  private async restoreLockText(guard: WriteGuard, journal: Journal): Promise<void> {
+  /**
+   * Put this skill's lock entry back to what it was before the transaction, if the transaction
+   * wrote it. Other skills' entries are left alone (they may have changed since).
+   */
+  private async restoreLockEntry(guard: WriteGuard, journal: Journal): Promise<void> {
     const current = await fsu.readTextOrNull(journal.lockFile);
-    if (current === journal.previousLockText || current === null) return;
-    let entry: LockEntry | undefined;
+    if (current === null || current === journal.previousLockText) return;
+    if (journal.newEntry === null) return;
+    let lock: LockFile;
     try {
-      entry = own(parseLock(current, journal.lockFile).skills, journal.name);
+      lock = parseLock(current, journal.lockFile);
     } catch {
-      entry = undefined;
+      return;
     }
-    if (journal.newEntry === null || entryKey(entry) !== entryKey(journal.newEntry)) return;
-    if (journal.previousLockText === null) await fsu.removeFile(guard, journal.lockFile);
-    else await fsu.writeFileAtomic(guard, journal.lockFile, journal.previousLockText);
+    if (entryKey(own(lock.skills, journal.name)) !== entryKey(journal.newEntry)) return;
+    let previousLock: LockFile | null = null;
+    if (journal.previousLockText !== null) {
+      try {
+        previousLock = parseLock(journal.previousLockText, journal.lockFile);
+      } catch {
+        previousLock = null;
+      }
+    }
+    const previous = previousLock ? own(previousLock.skills, journal.name) : undefined;
+    if (previous) lock.skills[journal.name] = previous;
+    else delete lock.skills[journal.name];
+    // Nothing else changed: put the exact previous bytes back (or remove a lock we created).
+    const unchangedOtherwise =
+      (previousLock === null && Object.keys(lock.skills).length === 0) ||
+      (previousLock !== null && serializeLock(previousLock) === serializeLock(lock));
+    if (unchangedOtherwise) {
+      if (journal.previousLockText === null) await fsu.removeFile(guard, journal.lockFile);
+      else await fsu.writeFileAtomic(guard, journal.lockFile, journal.previousLockText);
+      return;
+    }
+    await writeLock(guard, journal.lockFile, lock);
   }
 
-  private snapshotBase(scope: Scope, name: string): string {
-    return path.join(this.deps.agenthubHome, 'snapshots', scopeId(scope, this.projectRoot), name);
+  private snapshotBase(scope: Scope, name: string, projectRoot = this.projectRoot): string {
+    return path.join(this.deps.agenthubHome, 'snapshots', scopeId(scope, projectRoot), name);
   }
 
   /**
@@ -1232,8 +1483,9 @@ class InstallEngine implements Engine {
     entry: LockEntry,
     candidates: string[],
     txid: string,
+    projectRoot = this.projectRoot,
   ): Promise<string | undefined> {
-    const base = this.snapshotBase(scope, name);
+    const base = this.snapshotBase(scope, name, projectRoot);
     const temp = path.join(base, `.tmp-${txid}`);
     const filesDir = path.join(temp, 'files');
     let wrote = false;
@@ -1319,11 +1571,89 @@ class InstallEngine implements Engine {
     return out;
   }
 
+  /**
+   * What the registry says about a lock entry installed from it. The entry must come from the
+   * configured registry (CONFLICT naming both otherwise); a revoked or quarantined version, or a
+   * registry copy with other contents, becomes a blocker. When the registry cannot be asked, the
+   * plan says so in a hint.
+   */
+  private async registryCheck(
+    scope: Scope,
+    name: string,
+    entry: LockEntry,
+  ): Promise<{
+    registry: RegistrySource | null;
+    version?: RegistryVersion;
+    blockers: Blocker[];
+    hints: string[];
+  }> {
+    const out: {
+      registry: RegistrySource | null;
+      version?: RegistryVersion;
+      blockers: Blocker[];
+      hints: string[];
+    } = {
+      registry: null,
+      blockers: [],
+      hints: [],
+    };
+    if (entry.source !== 'registry') return out;
+    const registry = this.registryOrNull(scope);
+    const label = `${name}@${entry.version}`;
+    if (registry === null) {
+      out.hints.push(
+        `could not check whether ${label} was revoked: no registry is configured (it was installed from ${entry.registry ?? 'an unknown registry'})`,
+      );
+      return out;
+    }
+    if (!sameRegistry(entry.registry, registry.id)) {
+      throw new AgentHubError(
+        'CONFLICT',
+        `${name} was installed from ${entry.registry ?? 'an unknown registry'}, but the configured registry is ${registry.id} — configure ${entry.registry ?? 'that registry'} or reinstall ${name} explicitly`,
+        { recorded: entry.registry, configured: registry.id },
+      );
+    }
+    out.registry = registry;
+    let versions: RegistryVersion[];
+    try {
+      versions = await registry.listVersions(name);
+    } catch (error) {
+      if (isAgentHubError(error) && ['NOT_FOUND', 'REGISTRY', 'IO'].includes(error.code)) {
+        out.hints.push(
+          `could not check whether ${label} was revoked: ${errorText(error)} — check again with "agenthub update --check" when the registry is reachable`,
+        );
+        return out;
+      }
+      throw error;
+    }
+    const match = versions.find((v) => sameVersion(v.version, entry.version));
+    if (match === undefined) {
+      out.hints.push(`${label} is no longer listed by ${registry.id}`);
+      return out;
+    }
+    if (match.digest !== entry.digest) {
+      out.blockers.push({
+        code: 'CONFLICT',
+        message: `the lock records ${entry.digest} for ${label}, but ${registry.id} publishes ${match.digest}`,
+      });
+    } else if (match.status !== 'active') {
+      const reason = match.revokedReason ? `: ${match.revokedReason}` : '';
+      out.blockers.push({
+        code: 'REVOKED',
+        message: `version ${match.version} of ${name} is ${match.status}${reason}`,
+      });
+    } else {
+      out.version = match;
+    }
+    return out;
+  }
+
   /** The exact package behind a lock entry: an intact installed copy, the cache, or the registry. */
   private async packageForEntry(
     scope: Scope,
     name: string,
     entry: LockEntry,
+    check: { registry: RegistrySource | null; version?: RegistryVersion },
   ): Promise<{ pkg: SkillPackage; from: string }> {
     for (const lockPath of Object.keys(entry.paths)) {
       const { absDir } = this.resolveLockPath(scope, lockPath, name);
@@ -1339,24 +1669,9 @@ class InstallEngine implements Engine {
     const cached = await this.readCached(entry.digest, name);
     if (cached)
       return { pkg: withVersion(cached, entry.version), from: this.cacheFile(entry.digest) };
-    if (entry.source === 'registry') {
-      const registry = this.registryOrNull();
-      if (registry) {
-        const versions = await registry.listVersions(name);
-        const version = versions.find(
-          (v) => v.version === entry.version && v.digest === entry.digest,
-        );
-        if (version) {
-          if (version.status === 'revoked') {
-            throw new AgentHubError(
-              'CONFLICT',
-              `version ${entry.version} of ${name} is revoked${version.revokedReason ? `: ${version.revokedReason}` : ''}`,
-            );
-          }
-          const { pkg } = await this.downloadVerified(registry, name, version);
-          return { pkg, from: registry.id };
-        }
-      }
+    if (entry.source === 'registry' && check.registry !== null && check.version !== undefined) {
+      const { pkg } = await this.downloadVerified(check.registry, name, check.version);
+      return { pkg: withVersion(pkg, entry.version), from: check.registry.id };
     }
     throw new AgentHubError(
       'NOT_FOUND',
@@ -1364,54 +1679,123 @@ class InstallEngine implements Engine {
     );
   }
 
-  async restore(
+  async planRestore(
     scope: Scope,
     opts: { dev?: boolean; force?: boolean } = {},
-  ): Promise<InstallResult[]> {
+  ): Promise<InstallPlan[]> {
+    const scopeRoot = this.scopeRoot(scope);
     const lock = await readLock(this.lockFile(scope));
     const detected = await this.deps.agents.detect();
-    const results: InstallResult[] = [];
+    const configHints = this.configHints(scope);
+    const plans: InstallPlan[] = [];
     for (const name of Object.keys(lock.skills).sort()) {
       const entry = lock.skills[name] as LockEntry;
       const fixedTargets = Object.entries(entry.paths).map(([lockPath, agents]) => ({
         dir: this.resolveLockPath(scope, lockPath, name).dir,
         agents: [...agents],
       }));
-      const { pkg, from } = await this.packageForEntry(scope, name, entry);
+      const check = await this.registryCheck(scope, name, entry);
+      const registrySource: InstallPlan['source'] = {
+        kind: 'registry',
+        name,
+        range: entry.version,
+        ...(entry.registry ? { registry: entry.registry } : {}),
+      };
+      let found: { pkg: SkillPackage; from: string };
+      try {
+        found = await this.packageForEntry(scope, name, entry, check);
+      } catch (error) {
+        if (check.blockers.length === 0) throw error;
+        plans.push(
+          await this.stubPlan({
+            name,
+            skill: entry,
+            source: registrySource,
+            scope,
+            scopeRoot,
+            agents: [],
+            blockers: check.blockers,
+            hints: [...configHints, ...check.hints],
+            dev: opts.dev ?? false,
+            force: opts.force ?? false,
+          }),
+        );
+        continue;
+      }
+      const { pkg, from } = found;
       const source: InstallPlan['source'] =
         entry.source === 'registry'
-          ? {
-              kind: 'registry',
-              name,
-              range: entry.version,
-              ...(entry.registry ? { registry: entry.registry } : {}),
-            }
+          ? registrySource
           : { kind: from.endsWith('.skillpkg') ? 'file' : 'dir', path: from };
-      const plan = await this.buildPlan({
-        pkg,
-        source,
-        lockSource: entry.source,
-        registry: entry.registry,
-        scope,
-        agents: [],
-        detected,
-        fixedTargets,
-        dev: opts.dev ?? false,
-        force: opts.force ?? false,
-      });
+      plans.push(
+        await this.buildPlan({
+          pkg,
+          source,
+          lockSource: entry.source,
+          registry: entry.registry,
+          scope,
+          agents: [],
+          detected,
+          fixedTargets,
+          dev: opts.dev ?? false,
+          force: opts.force ?? false,
+          hints: [...configHints, ...check.hints],
+          blockers: check.blockers,
+        }),
+      );
+    }
+    return plans;
+  }
+
+  async restore(scope: Scope, opts: RestoreOptions = {}): Promise<InstallResult[]> {
+    const plans = await this.planRestore(scope, {
+      ...(opts.dev === undefined ? {} : { dev: opts.dev }),
+      ...(opts.force === undefined ? {} : { force: opts.force }),
+    });
+    // Nothing is written unless every entry can be restored and every confirmation was given.
+    for (const plan of plans) {
       const blocked = blockerError(plan);
       if (blocked) {
-        throw new AgentHubError(blocked.code, `${name}: ${blocked.message}`, blocked.details);
+        throw new AgentHubError(
+          blocked.code,
+          `${plan.skill.name}: ${blocked.message}`,
+          blocked.details,
+        );
       }
-      results.push(await this.apply(plan));
     }
-    return results;
+    for (const plan of plans) {
+      if (!plan.needsConfirmation) continue;
+      if (opts.confirm === undefined) {
+        throw new AgentHubError(
+          'USAGE',
+          `${plan.skill.name} ${plan.skill.version} needs confirmation before it is restored (${describeConfirmation(plan)}); review it with "agenthub install ${plan.skill.name}"`,
+          { plan },
+        );
+      }
+      if (!(await opts.confirm(plan))) {
+        throw new AgentHubError('CANCELLED', `restore cancelled at ${plan.skill.name}`);
+      }
+    }
+    return this.exclusive(async () => {
+      const results: InstallResult[] = [];
+      for (const plan of plans) results.push(await this.applyLocked(plan));
+      return results;
+    });
   }
 
   async remove(
     name: string,
     scope: Scope,
     opts: { force?: boolean; dryRun?: boolean } = {},
+  ): Promise<RemoveResult> {
+    if (opts.dryRun) return this.removeLocked(name, scope, opts);
+    return this.exclusive(() => this.removeLocked(name, scope, opts));
+  }
+
+  private async removeLocked(
+    name: string,
+    scope: Scope,
+    opts: { force?: boolean; dryRun?: boolean },
   ): Promise<RemoveResult> {
     const lockFile = this.lockFile(scope);
     const lock = await readLock(lockFile);
@@ -1471,7 +1855,8 @@ class InstallEngine implements Engine {
       }
       const statuses = fsu.diffFiles(entry.files, await fsu.hashInstalledDir(target.absDir));
       for (const status of statuses) {
-        if (status.status === 'ok') {
+        const junk = status.status === 'extra' && fsu.isOsJunk(status.path);
+        if (status.status === 'ok' || junk) {
           if (!dryRun)
             await fsu.removeFile(guard, path.join(target.absDir, ...status.path.split('/')));
         } else if (status.status !== 'missing') {
@@ -1480,7 +1865,12 @@ class InstallEngine implements Engine {
       }
       if (!dryRun) await this.removeEmptyTree(guard, target.absDir);
       const gone = dryRun
-        ? statuses.every((s) => s.status === 'ok' || s.status === 'missing')
+        ? statuses.every(
+            (s) =>
+              s.status === 'ok' ||
+              s.status === 'missing' ||
+              (s.status === 'extra' && fsu.isOsJunk(s.path)),
+          )
         : !(await fsu.exists(target.absDir));
       if (gone) removed.push(target.lockPath);
     }
@@ -1518,7 +1908,7 @@ class InstallEngine implements Engine {
       const kind = await fsu.pathKind(absDir);
       const files =
         kind === 'dir'
-          ? fsu.diffFiles(entry.files, await fsu.hashInstalledDir(absDir))
+          ? fsu.diffFiles(entry.files, await hashSkillDir(absDir, entry.files))
           : fsu.diffFiles(entry.files, {});
       targets.push({ lockPath, ok: files.every((f) => f.status === 'ok'), files });
     }
@@ -1576,10 +1966,14 @@ class InstallEngine implements Engine {
   // Updates and rollback
   // -------------------------------------------------------------------------
 
-  async checkUpdates(scope: Scope, names?: string[]): Promise<UpdateCandidate[]> {
+  async checkUpdates(
+    scope: Scope,
+    names?: string[],
+    opts: { channel?: 'stable' | 'beta' } = {},
+  ): Promise<UpdateCandidate[]> {
     const lock = await readLock(this.lockFile(scope));
-    const registry = this.registryOrNull();
-    const channel = this.config().effective.channel ?? 'stable';
+    const registry = this.registryOrNull(scope);
+    const channel = opts.channel ?? this.config(scope).effective.channel ?? 'stable';
     const out: UpdateCandidate[] = [];
     const selected = names && names.length > 0 ? names : Object.keys(lock.skills).sort();
     for (const name of selected) {
@@ -1587,13 +1981,26 @@ class InstallEngine implements Engine {
       if (!entry)
         throw new AgentHubError('NOT_FOUND', `${name} is not installed at ${scope} scope`);
       const base = { name, scope, current: entry.version };
-      if (!registry) {
+      const none = { latest: null, latestCompatible: null };
+      if (entry.source !== 'registry') {
         out.push({
           ...base,
-          latest: null,
-          latestCompatible: null,
+          ...none,
           status: 'not-in-registry',
-          reason: 'no registry configured',
+          reason: `installed from a local ${entry.source === 'dir' ? 'folder' : 'package file'}`,
+        });
+        continue;
+      }
+      if (!registry) {
+        out.push({ ...base, ...none, status: 'not-in-registry', reason: 'no registry configured' });
+        continue;
+      }
+      if (!sameRegistry(entry.registry, registry.id)) {
+        out.push({
+          ...base,
+          ...none,
+          status: 'registry-mismatch',
+          reason: `installed from ${entry.registry ?? 'an unknown registry'}, the configured registry is ${registry.id}`,
         });
         continue;
       }
@@ -1602,13 +2009,7 @@ class InstallEngine implements Engine {
         versions = await registry.listVersions(name);
       } catch (error) {
         if (isAgentHubError(error) && error.code === 'NOT_FOUND') {
-          out.push({
-            ...base,
-            latest: null,
-            latestCompatible: null,
-            status: 'not-in-registry',
-            reason: error.message,
-          });
+          out.push({ ...base, ...none, status: 'not-in-registry', reason: error.message });
           continue;
         }
         throw error;
@@ -1620,32 +2021,37 @@ class InstallEngine implements Engine {
         agents: entry.installedTargets,
       });
       const latestCompatible = compatible.kind === 'ok' ? compatible.version.version : null;
-      const current = versions.find((v) => v.version === entry.version);
+      const found = { ...base, latest, latestCompatible };
+      const current = versions.find((v) => sameVersion(v.version, entry.version));
       const drift = !(await this.verifyEntry(scope, name, entry)).ok;
-      if (current?.status === 'revoked') {
+      if (current !== undefined && current.digest !== entry.digest) {
         out.push({
-          ...base,
-          latest,
-          latestCompatible,
+          ...found,
+          status: 'digest-mismatch',
+          reason: `the lock records ${entry.digest}, the registry publishes ${current.digest} for ${current.version}`,
+        });
+      } else if (current?.status === 'revoked') {
+        out.push({
+          ...found,
           status: 'current-revoked',
           reason: `version ${entry.version} is revoked${current.revokedReason ? `: ${current.revokedReason}` : ''}`,
         });
-      } else if (drift) {
+      } else if (current?.status === 'quarantined') {
         out.push({
-          ...base,
-          latest,
-          latestCompatible,
-          status: 'drift',
-          reason: 'installed files differ from the lock',
+          ...found,
+          status: 'current-quarantined',
+          reason: `version ${entry.version} is quarantined by the registry`,
         });
+      } else if (drift) {
+        out.push({ ...found, status: 'drift', reason: 'installed files differ from the lock' });
       } else if (
         latestCompatible !== null &&
         semver.valid(entry.version) !== null &&
         semver.gt(latestCompatible, entry.version)
       ) {
-        out.push({ ...base, latest, latestCompatible, status: 'available' });
+        out.push({ ...found, status: 'available' });
       } else {
-        out.push({ ...base, latest, latestCompatible, status: 'up-to-date' });
+        out.push({ ...found, status: 'up-to-date' });
       }
     }
     return out;
@@ -1659,26 +2065,41 @@ class InstallEngine implements Engine {
     const lock = await readLock(this.lockFile(scope));
     const entry = own(lock.skills, name);
     if (!entry) throw new AgentHubError('NOT_FOUND', `${name} is not installed at ${scope} scope`);
-    const registry = this.registry();
-    const channel = opts.channel ?? this.config().effective.channel ?? 'stable';
+    if (entry.source !== 'registry') {
+      throw new AgentHubError(
+        'CONFLICT',
+        `${name} was installed from a local ${entry.source === 'dir' ? 'folder' : 'package file'}, not a registry — install it from the registry explicitly to switch`,
+      );
+    }
+    const registry = this.registry(scope);
+    if (!sameRegistry(entry.registry, registry.id)) {
+      throw new AgentHubError(
+        'CONFLICT',
+        `${name} was installed from ${entry.registry ?? 'an unknown registry'}, but the configured registry is ${registry.id} — updates only come from the registry recorded in the lock`,
+        { recorded: entry.registry, configured: registry.id },
+      );
+    }
+    const channel = opts.channel ?? this.config(scope).effective.channel ?? 'stable';
     const versions = await registry.listVersions(name);
     const outcome = resolveVersion(versions, {
       ...(opts.range === undefined ? {} : { range: opts.range }),
       channel,
       agents: entry.installedTargets,
     });
-    const currentRevoked = versions.some(
-      (v) => v.version === entry.version && v.status === 'revoked',
-    );
+    const current = versions.find((v) => sameVersion(v.version, entry.version));
+    // A revoked/quarantined current version, or registry contents that differ from the lock,
+    // always need a reinstall (never "up to date").
+    const mustReplace =
+      current !== undefined && (current.status !== 'active' || current.digest !== entry.digest);
     if (outcome.kind === 'none') {
-      if (currentRevoked) throw new AgentHubError('NOT_FOUND', `${name}: ${outcome.reason}`);
+      if (mustReplace) throw new AgentHubError('NOT_FOUND', `${name}: ${outcome.reason}`);
       return null;
     }
     const target = outcome.version;
-    if (target.version === entry.version && target.digest === entry.digest) return null;
+    if (sameVersion(target.version, entry.version) && target.digest === entry.digest) return null;
     if (
       outcome.kind === 'ok' &&
-      !currentRevoked &&
+      !mustReplace &&
       semver.valid(entry.version) !== null &&
       semver.lte(target.version, entry.version)
     ) {
@@ -1695,6 +2116,7 @@ class InstallEngine implements Engine {
   }
 
   async rollback(name: string, scope: Scope): Promise<InstallResult> {
+    this.lockFile(scope);
     const base = this.snapshotBase(scope, name);
     const candidates: { dir: string; mtime: number }[] = [];
     for (const child of await fsu.listDir(base)) {
@@ -1717,7 +2139,7 @@ class InstallEngine implements Engine {
     } catch (error) {
       throw new AgentHubError('VALIDATION', `invalid snapshot ${entryFile}: ${errorText(error)}`);
     }
-    const entry = parseLockEntry(raw, entryFile);
+    const entry = parseLockEntry(raw, entryFile, name);
     const filesDir = path.join(snapshot.dir, 'files');
     const built = buildSkillPackage(await fsu.readTreeFiles(filesDir), { folderName: name });
     if (built.digest !== entry.digest) {
@@ -1731,6 +2153,8 @@ class InstallEngine implements Engine {
       dir: this.resolveLockPath(scope, lockPath, name).dir,
       agents: [...agents],
     }));
+    // Design 8.1: revoked (and quarantined) versions are never installed, from snapshots either.
+    const check = await this.registryCheck(scope, name, entry);
     const plan = await this.buildPlan({
       pkg,
       source:
@@ -1751,6 +2175,8 @@ class InstallEngine implements Engine {
       dev: false,
       force: false,
       action: 'rollback',
+      hints: check.hints,
+      blockers: check.blockers,
     });
     const blocked = blockerError(plan);
     if (blocked) throw blocked;
@@ -1761,34 +2187,129 @@ class InstallEngine implements Engine {
   // Recovery and doctor
   // -------------------------------------------------------------------------
 
-  private journalProblem(journal: Journal): string | null {
-    const root = journal.scopeRoot;
-    const home = this.deps.agenthubHome;
-    const inScope = (p: string) => fsu.isWithin(root, p);
-    const inState = (p: string) =>
-      fsu.isWithin(home, p) || fsu.isWithin(path.join(root, '.agenthub'), p);
-    for (const dir of journal.stagingDirs) {
-      const fallback = path.basename(dir) === `.agenthub-tmp-${journal.txid}` && inScope(dir);
-      if (!inState(dir) && !fallback) return `staging folder outside the state folders: ${dir}`;
+  /**
+   * A journal comes from disk and is checked against real state, never against itself: its
+   * scope root must be the user home or a project (this one, or one whose lock lists the
+   * journal's folders), every target must be `<skills folder>/<name>` in that root, staging must
+   * be the transaction's own staging folders, and the lock file must be that scope's lock.
+   */
+  private async journalProblem(file: string, journal: Journal): Promise<string | null> {
+    if (path.basename(file) !== `${journal.txid}.json`) {
+      return 'the file name does not match its transaction id';
     }
-    const inStaging = (p: string) => journal.stagingDirs.some((dir) => fsu.isWithin(dir, p));
+    let root: string;
+    let stateDir: string;
+    if (journal.scope === 'user') {
+      root = this.deps.home;
+      stateDir = this.deps.agenthubHome;
+      if (!fsu.samePath(journal.scopeRoot, root)) {
+        return `scope root ${journal.scopeRoot} is not the user home ${root}`;
+      }
+    } else {
+      root = path.resolve(journal.scopeRoot);
+      stateDir = path.join(root, STATE_DIR);
+      if (fsu.samePath(stateDir, this.deps.agenthubHome) || fsu.samePath(root, this.deps.home)) {
+        return `scope root ${root} is not a project`;
+      }
+      try {
+        assertProjectStateSafe(root);
+      } catch (error) {
+        return errorText(error);
+      }
+    }
+    if (!fsu.samePath(journal.lockFile, path.join(stateDir, LOCK_FILE))) {
+      return `lock file ${journal.lockFile} is not the lock of ${root}`;
+    }
+    const ownStaging = path.join(stateDir, 'tmp', journal.txid);
+    if (!fsu.samePath(journal.stagingRoot, ownStaging)) {
+      return `staging folder ${journal.stagingRoot} is not ${ownStaging}`;
+    }
+    if (journal.newEntry !== null) {
+      try {
+        parseLockEntry(journal.newEntry, file, journal.name);
+      } catch (error) {
+        return errorText(error);
+      }
+    }
+    const lockPaths: string[] = [];
     for (const step of journal.steps) {
-      if (!inScope(step.absDir) || fsu.isWithin(step.absDir, root))
+      const rel = path.relative(root, step.absDir);
+      if (rel === '' || path.isAbsolute(rel) || rel.startsWith('..')) {
         return `target outside the scope root: ${step.absDir}`;
-      if (step.backup !== undefined && !inStaging(step.backup))
+      }
+      const segments = rel.split(path.sep).join('/');
+      const lockPath = journal.scope === 'user' ? `~/${segments}` : segments;
+      try {
+        const checked = this.checkLockPath(journal.scope, root, lockPath, journal.name);
+        if (!fsu.samePath(checked.absDir, step.absDir)) throw new Error('mismatch');
+      } catch {
+        return `target ${step.absDir} is not a skills folder entry for ${journal.name}`;
+      }
+      lockPaths.push(lockPath);
+    }
+    const allowedStaging = [
+      ownStaging,
+      ...journal.steps.map((step) =>
+        path.join(path.dirname(path.dirname(step.absDir)), `.agenthub-tmp-${journal.txid}`),
+      ),
+    ];
+    for (const dir of journal.stagingDirs) {
+      if (!allowedStaging.some((allowed) => fsu.samePath(allowed, dir))) {
+        return `staging folder outside the state folders: ${dir}`;
+      }
+    }
+    const inStaging = (p: string, kind: 'new' | 'old') =>
+      journal.stagingDirs.some(
+        (dir) =>
+          /^\d+$/.test(path.basename(p)) && fsu.samePath(path.dirname(p), path.join(dir, kind)),
+      );
+    for (const step of journal.steps) {
+      if (step.backup !== undefined && !inStaging(step.backup, 'old'))
         return `backup outside staging: ${step.backup}`;
-      if (step.staged !== undefined && !inStaging(step.staged))
+      if (step.staged !== undefined && !inStaging(step.staged, 'new'))
         return `staged copy outside staging: ${step.staged}`;
     }
+    const strictlyInside = (base: string, p: string) =>
+      fsu.isWithin(base, p) && !fsu.samePath(base, p);
     for (const dir of journal.createdDirs) {
-      if (!inScope(dir) && !inState(dir)) return `created folder outside the scope: ${dir}`;
+      if (!strictlyInside(root, dir) && !strictlyInside(this.deps.agenthubHome, dir)) {
+        return `created folder outside the scope: ${dir}`;
+      }
     }
-    if (!inState(journal.lockFile))
-      return `lock file outside the state folders: ${journal.lockFile}`;
+    // A project other than the current one: only when its own lock lists the journal's folders.
+    if (
+      journal.scope === 'project' &&
+      !(this.projectRoot && fsu.samePath(root, this.projectRoot))
+    ) {
+      let entry: LockEntry | undefined;
+      try {
+        entry = own((await readLock(journal.lockFile)).skills, journal.name);
+      } catch {
+        entry = undefined;
+      }
+      if (!entry || !lockPaths.every((lockPath) => Object.hasOwn(entry.paths, lockPath))) {
+        return `it belongs to the project ${root}; run agenthub inside that project to recover it`;
+      }
+    }
     return null;
   }
 
   async recover(): Promise<string[]> {
+    const home = this.deps.agenthubHome;
+    if ((await fsu.listDir(path.join(home, 'journal'))).length === 0) return [];
+    // Never replay a journal while another agenthub process may be writing it.
+    const release = await acquireProcessLock(home, { waitMs: 0, now: this.now });
+    if (release === null) {
+      return ['another agenthub process is running; interrupted transactions were not checked'];
+    }
+    try {
+      return await this.recoverLocked();
+    } finally {
+      await release().catch(() => undefined);
+    }
+  }
+
+  private async recoverLocked(): Promise<string[]> {
     const messages: string[] = [];
     const home = this.deps.agenthubHome;
     for (const item of await readJournals(home)) {
@@ -1797,7 +2318,13 @@ class InstallEngine implements Engine {
         continue;
       }
       const journal = item.journal;
-      const problem = this.journalProblem(journal);
+      if (journal.pid !== process.pid && ownerAlive(journal.pid, journal.host)) {
+        messages.push(
+          `skipped journal ${item.file}: its transaction is still running (pid ${journal.pid})`,
+        );
+        continue;
+      }
+      const problem = await this.journalProblem(item.file, journal);
       if (problem) {
         messages.push(`skipped journal ${item.file}: ${problem}`);
         continue;
@@ -1809,7 +2336,7 @@ class InstallEngine implements Engine {
         ...journal.steps.map((step) => step.absDir),
       ]);
       if (!journal.committed) {
-        const problems = await this.undoTransaction(guard, journal);
+        const problems = await this.undoTransaction(guard, journal, true);
         messages.push(
           problems.length === 0
             ? `rolled back an interrupted install of ${journal.name} (${journal.steps.length} folder(s) restored)`
@@ -1818,22 +2345,66 @@ class InstallEngine implements Engine {
         continue;
       }
       try {
-        if (journal.newEntry) {
-          const lock = await readLock(journal.lockFile);
-          if (entryKey(own(lock.skills, journal.name)) !== entryKey(journal.newEntry)) {
-            lock.skills[journal.name] = journal.newEntry;
-            await writeLock(guard, journal.lockFile, lock);
-          }
-        }
-        for (const dir of journal.stagingDirs) await fsu.removeTree(guard, dir);
-        await deleteJournal(guard, home, journal.txid);
-        messages.push(`finished an interrupted install of ${journal.name}`);
+        messages.push(...(await this.finishCommitted(guard, journal)));
       } catch (error) {
         messages.push(
           `could not finish the interrupted install of ${journal.name}: ${errorText(error)}`,
         );
       }
     }
+    return messages;
+  }
+
+  /**
+   * A transaction that crashed after its commit point: the lock already holds the new entry.
+   * Keep a snapshot of the parked previous copy, then remove staging. The lock is never rewritten
+   * here — if it has moved on since, that newer state wins.
+   */
+  private async finishCommitted(guard: WriteGuard, journal: Journal): Promise<string[]> {
+    const messages: string[] = [];
+    const lockText = await fsu.readTextOrNull(journal.lockFile);
+    const current =
+      lockText === null
+        ? undefined
+        : own(parseLock(lockText, journal.lockFile).skills, journal.name);
+    if (journal.newEntry !== null && entryKey(current) !== entryKey(journal.newEntry)) {
+      messages.push(
+        `the lock entry of ${journal.name} changed after the interrupted install; it was left as it is`,
+      );
+    }
+    let previous: LockEntry | undefined;
+    if (journal.previousLockText !== null) {
+      try {
+        previous = own(parseLock(journal.previousLockText, journal.lockFile).skills, journal.name);
+      } catch {
+        previous = undefined;
+      }
+    }
+    if (previous && journal.newEntry && previous.digest !== journal.newEntry.digest) {
+      const backups: string[] = [];
+      for (const step of journal.steps) {
+        if (step.backup !== undefined && (await fsu.exists(step.backup))) backups.push(step.backup);
+      }
+      const root = journal.scope === 'project' ? path.resolve(journal.scopeRoot) : this.projectRoot;
+      try {
+        await this.writeSnapshot(
+          guard,
+          journal.scope,
+          journal.name,
+          previous,
+          backups,
+          journal.txid,
+          root,
+        );
+      } catch (error) {
+        messages.push(
+          `could not save a snapshot of ${journal.name}@${previous.version}: ${errorText(error)}`,
+        );
+      }
+    }
+    for (const dir of journal.stagingDirs) await fsu.removeTree(guard, dir);
+    await deleteJournal(guard, this.deps.agenthubHome, journal.txid);
+    messages.push(`finished an interrupted install of ${journal.name}`);
     return messages;
   }
 
@@ -1860,7 +2431,9 @@ class InstallEngine implements Engine {
     const problems: DoctorProblem[] = [];
     const agents = await this.deps.agents.detect();
     try {
-      this.config();
+      for (const warning of this.config().warnings) {
+        problems.push({ level: 'warning', code: 'config.project-ignored', message: warning });
+      }
     } catch (error) {
       problems.push({ level: 'error', code: 'config.invalid', message: errorText(error) });
     }
@@ -1871,7 +2444,13 @@ class InstallEngine implements Engine {
     const skillsParents = new Set<string>();
     for (const scope of this.scopes()) {
       const root = this.scopeRoot(scope);
-      const lockFile = this.lockFile(scope);
+      let lockFile: string;
+      try {
+        lockFile = this.lockFile(scope);
+      } catch (error) {
+        problems.push({ level: 'error', code: 'state.unsafe', message: errorText(error) });
+        continue;
+      }
       const lockExists = await fsu.exists(lockFile);
       let skills: Record<string, LockEntry> = {};
       try {

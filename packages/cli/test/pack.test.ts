@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { readSkillArchive } from '@agenthub/core';
@@ -73,5 +73,47 @@ describe('pack --version', () => {
     const result = await pack([join(dir, 'with-manifest')]);
     expect(result.code, result.stderr).toBe(0);
     expect(result.envelope.data.file).toBe(join(dir, 'with-manifest-1.0.0.skillpkg'));
+  });
+
+  it('refuses to overwrite an existing default output without --force', async () => {
+    const file = join(dir, 'with-manifest-1.0.0.skillpkg');
+    await writeFile(file, 'precious');
+    const refused = await pack([join(dir, 'with-manifest')]);
+    expect(refused.code).toBe(2);
+    expect(refused.envelope.error.message).toMatch(/--force/);
+    expect(await readFile(file, 'utf8')).toBe('precious');
+
+    const forced = await pack([join(dir, 'with-manifest'), '--force']);
+    expect(forced.code, forced.stderr).toBe(0);
+    expect((await readFile(file)).byteLength).toBe(forced.envelope.data.sizeBytes);
+  });
+
+  it('never writes through a symbolic link at the output path', async (context) => {
+    const victim = join(dir, 'victim.txt');
+    await writeFile(victim, 'do not touch');
+    const link = join(dir, 'linked.skillpkg');
+    try {
+      await symlink(victim, link, 'file');
+    } catch {
+      context.skip(); // creating symbolic links needs a privilege on this machine
+      return;
+    }
+    for (const args of [
+      ['-o', link],
+      ['-o', link, '--force'],
+    ]) {
+      const result = await pack([join(dir, 'with-manifest'), ...args]);
+      expect(result.code).not.toBe(0);
+      expect(result.envelope.error.message).toMatch(/symbolic link|not a regular file/);
+    }
+    expect(await readFile(victim, 'utf8')).toBe('do not touch');
+    expect((await lstat(link)).isSymbolicLink()).toBe(true);
+  });
+
+  it('refuses a folder at the output path', async () => {
+    await mkdir(join(dir, 'a-folder.skillpkg'));
+    const result = await pack([join(dir, 'with-manifest'), '-o', join(dir, 'a-folder.skillpkg')]);
+    expect(result.code).not.toBe(0);
+    expect(result.envelope.error.message).toMatch(/not a regular file/);
   });
 });

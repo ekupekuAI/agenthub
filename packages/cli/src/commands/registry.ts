@@ -12,5 +12,6 @@ export async function requireRegistry(ctx: CommandContext): Promise<RegistrySour
     );
   }
   if (wiring.registryError !== undefined) throw wiring.registryError;
+  await ctx.registryNotice();
   return wiring.registry;
 }

@@ -1,5 +1,8 @@
+import { Buffer } from 'node:buffer';
 import { AgentHubError } from './errors';
-import { errorMessage, isPlainObject, parseYamlSafe, stripBom } from './safe-yaml';
+import { YAML_LIMITS } from './limits';
+import { escapeForDisplay, isWindowsReservedName } from './paths';
+import { errorMessage, findHiddenChars, isPlainObject, parseYamlSafe, stripBom } from './safe-yaml';
 import type { SkillFrontmatter, ValidationIssue } from './types';
 
 export const SKILL_NAME_PATTERN = /^[a-z0-9]+(-[a-z0-9]+)*$/;
@@ -75,11 +78,21 @@ export function validateFrontmatter(
         ),
       );
     }
+    const shown = escapeForDisplay(name);
     if (name.length > 0 && !SKILL_NAME_PATTERN.test(name)) {
       issues.push(
         error(
           'name.format',
-          `name "${name}" may only contain a-z, 0-9 and single hyphens, and cannot start or end with a hyphen`,
+          `name "${shown}" may only contain a-z, 0-9 and single hyphens, and cannot start or end with a hyphen`,
+          'name',
+        ),
+      );
+    }
+    if (isWindowsReservedName(name)) {
+      issues.push(
+        error(
+          'name.reserved',
+          `name "${shown}" is a Windows device name and cannot be used as a folder name`,
           'name',
         ),
       );
@@ -88,7 +101,7 @@ export function validateFrontmatter(
       issues.push(
         error(
           'name.folder-mismatch',
-          `name "${name}" must equal the skill folder name "${folderName}"`,
+          `name "${shown}" must equal the skill folder name "${escapeForDisplay(folderName)}"`,
           'name',
         ),
       );
@@ -142,11 +155,12 @@ export function validateFrontmatter(
     } else {
       for (const [key, value] of Object.entries(metadata)) {
         if (typeof value !== 'string') {
+          const field = `metadata.${escapeForDisplay(key)}`;
           issues.push(
             warning(
               'metadata.value-type',
-              `metadata.${key} should be a string (got ${Array.isArray(value) ? 'array' : typeof value})`,
-              `metadata.${key}`,
+              `${field} should be a string (got ${Array.isArray(value) ? 'array' : typeof value})`,
+              field,
             ),
           );
         }
@@ -177,14 +191,27 @@ export function validateFrontmatter(
 
   for (const key of Object.keys(fm)) {
     if (!KNOWN_KEYS.has(key)) {
+      const shown = escapeForDisplay(key);
       issues.push(
         warning(
           'frontmatter.unknown-key',
-          `unknown frontmatter key "${key}" (kept as a vendor extension)`,
-          key,
+          `unknown frontmatter key "${shown}" (kept as a vendor extension)`,
+          shown,
         ),
       );
     }
+  }
+
+  // Agents load frontmatter values into model context: no hidden or control characters,
+  // whether written literally or produced by a YAML escape such as "\U000E0049".
+  for (const { path, char } of findHiddenChars(fm)) {
+    issues.push(
+      error(
+        'frontmatter.hidden-char',
+        `${path} contains the control or invisible character ${char}; remove it`,
+        path,
+      ),
+    );
   }
 
   return issues;
@@ -215,9 +242,17 @@ export function parseSkillMd(text: string, opts: { folderName?: string } = {}): 
     );
   }
 
+  const yaml = lines.slice(1, end).join('\n');
+  const bytes = Buffer.byteLength(yaml, 'utf8');
+  if (bytes > YAML_LIMITS.maxBytes) {
+    structuralError(
+      'frontmatter.too-large',
+      `SKILL.md frontmatter is ${bytes} bytes; the limit is ${YAML_LIMITS.maxBytes}`,
+    );
+  }
   let data: unknown;
   try {
-    data = parseYamlSafe(lines.slice(1, end).join('\n'));
+    data = parseYamlSafe(yaml);
   } catch (cause) {
     structuralError(
       'frontmatter.yaml',

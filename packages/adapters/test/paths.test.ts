@@ -5,6 +5,8 @@ import {
   AGENT_PATHS,
   getAdapter,
   isAgentId,
+  isLegacySkillsDir,
+  isWritableSkillsDir,
   normalizeSkillsDir,
   PATH_TABLE_VERSION,
   WRITE_CANDIDATES,
@@ -77,14 +79,34 @@ describe('adapters', () => {
     expect(getAdapter('codex').reloadHint).toBeUndefined();
   });
 
-  it('reads() matches the table after normalizing the folder', () => {
+  it('reads() matches the table spelling exactly', () => {
     const claude = getAdapter('claude-code');
     expect(claude.reads('project', '.claude/skills')).toBe(true);
-    expect(claude.reads('project', './.claude/skills/')).toBe(true);
-    expect(claude.reads('project', '.claude\\skills')).toBe(true);
-    expect(claude.reads('user', '~/.claude/skills')).toBe(true);
+    expect(claude.reads('user', '.claude/skills')).toBe(true);
     expect(getAdapter('vscode').reads('user', '.copilot/skills')).toBe(true);
     expect(getAdapter('vscode').reads('project', '.github/skills')).toBe(true);
+  });
+
+  it('reads() rejects padded and other non-canonical spellings (they are written verbatim)', () => {
+    const claude = getAdapter('claude-code');
+    for (const dir of [
+      ' .claude/skills',
+      '.claude/skills ',
+      '\t.claude/skills',
+      '\uFEFF.claude/skills',
+      '\u00A0.claude/skills',
+      '.claude /skills',
+      './.claude/skills/',
+      '.claude/skills/',
+      '.claude//skills',
+      '.claude\\skills',
+    ]) {
+      expect(claude.reads('project', dir), JSON.stringify(dir)).toBe(false);
+      expect(claude.reads('user', dir), JSON.stringify(dir)).toBe(false);
+    }
+    // The engine strips one `~/` from user lock paths; a second one must not be accepted.
+    expect(claude.reads('user', '~/.claude/skills')).toBe(false);
+    expect(getAdapter('cursor').reads('user', '~/.agents/skills')).toBe(false);
   });
 
   it('reads() rejects folders an agent does not read', () => {
@@ -110,5 +132,48 @@ describe('adapters', () => {
   it('normalizeSkillsDir keeps project paths relative and strips ~/ only at user scope', () => {
     expect(normalizeSkillsDir('user', '~/.agents//skills/')).toBe('.agents/skills');
     expect(normalizeSkillsDir('project', '~/.agents/skills')).toBe('~/.agents/skills');
+  });
+
+  it('normalizeSkillsDir keeps whitespace and strips only one ~/', () => {
+    expect(normalizeSkillsDir('project', ' .claude/skills')).toBe(' .claude/skills');
+    expect(normalizeSkillsDir('user', '~/~/.claude/skills')).toBe('~/.claude/skills');
+  });
+});
+
+describe('write targets', () => {
+  it('isWritableSkillsDir() accepts exactly the write candidates, per scope', () => {
+    for (const scope of SCOPES) {
+      for (const dir of WRITE_CANDIDATES[scope]) expect(isWritableSkillsDir(scope, dir)).toBe(true);
+    }
+    expect(isWritableSkillsDir('project', '.copilot/skills')).toBe(false);
+    expect(isWritableSkillsDir('user', '.github/skills')).toBe(false);
+    expect(isWritableSkillsDir('project', '.evil/skills')).toBe(false);
+  });
+
+  it('never treats the legacy codex folder as writable, although cursor reads it', () => {
+    for (const scope of SCOPES) {
+      expect(getAdapter('cursor').reads(scope, '.codex/skills')).toBe(true);
+      expect(isLegacySkillsDir(scope, '.codex/skills')).toBe(true);
+      expect(isWritableSkillsDir(scope, '.codex/skills')).toBe(false);
+      expect(isLegacySkillsDir(scope, '.agents/skills')).toBe(false);
+    }
+  });
+
+  it('isWritableSkillsDir() rejects non-canonical spellings', () => {
+    for (const dir of [
+      ' .agents/skills',
+      '.agents/skills/',
+      './.agents/skills',
+      '.agents\\skills',
+    ]) {
+      expect(isWritableSkillsDir('project', dir), JSON.stringify(dir)).toBe(false);
+    }
+    expect(isWritableSkillsDir('user', '~/.agents/skills')).toBe(false);
+  });
+
+  it('WRITE_CANDIDATES cannot be changed at runtime', () => {
+    expect(Object.isFrozen(WRITE_CANDIDATES)).toBe(true);
+    expect(() => (WRITE_CANDIDATES.project as string[]).push('.codex/skills')).toThrow();
+    expect(isWritableSkillsDir('project', '.codex/skills')).toBe(false);
   });
 });

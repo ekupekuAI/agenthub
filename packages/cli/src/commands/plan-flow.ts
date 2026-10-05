@@ -54,12 +54,13 @@ export interface PlanFlowResult {
 
 /**
  * Prints the plan, then stops for --dry-run, throws for blockers, asks for confirmation and
- * applies. `verb` is used in the question and the success line.
+ * applies. `verb` is used in the question and the success line; `caution` makes the terminal
+ * prompt default to "no".
  */
 export async function runPlan(
   ctx: CommandContext,
   plan: InstallPlan,
-  verb: { question: string; done: string; title?: string },
+  verb: { question: string; done: string; title?: string; caution?: boolean },
 ): Promise<PlanFlowResult> {
   printPlan(ctx, plan, verb.title);
   if (plan.blockers.length > 0) throw blockedError(plan);
@@ -67,7 +68,10 @@ export async function runPlan(
     ctx.out.progress('dry run: nothing was changed');
     return { plan, result: null, dryRun: true };
   }
-  await confirmPlan(plan, verb.question, ctx.confirmOptions());
+  await confirmPlan(plan, verb.question, {
+    ...ctx.confirmOptions(),
+    caution: verb.caution === true,
+  });
   const engine = await ctx.engine();
   const result = await engine.apply(plan);
   ctx.out.lines(formatInstalled(verb.done, result, ctx.out.style));

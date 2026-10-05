@@ -49,7 +49,10 @@ export interface PackageFile {
   path: string;
   /** Normalized bytes: text files are LF-only, binary files untouched. */
   content: Uint8Array;
-  /** 'text' = valid UTF-8 without NUL bytes. */
+  /**
+   * 'text' = no NUL bytes and either valid UTF-8 or a known text/script type (extension or
+   * shebang). Text files may therefore contain invalid UTF-8; consumers must decode leniently.
+   */
   kind: 'text' | 'binary';
   /** True when the file starts with "#!" (written with mode 0755 on POSIX). */
   executable: boolean;

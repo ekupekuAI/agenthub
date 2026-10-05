@@ -3,6 +3,7 @@
  */
 import { z } from 'zod';
 import { AgentHubError } from '../errors';
+import { contentDigest } from '../hash';
 import { checkPackagePath } from '../paths';
 import { SKILL_NAME_PATTERN } from '../skillmd';
 import { AGENT_IDS, type LockEntry, type LockFile } from '../types';
@@ -49,6 +50,26 @@ function describeIssues(error: z.ZodError): string {
     .join('; ');
 }
 
+/**
+ * A lock is untrusted input (it is committed to git): its `digest` must be the content digest of
+ * its own `files` map, otherwise a forged entry could pair a trusted digest with other files.
+ */
+function assertConsistent(name: string, entry: LockEntry, file: string): void {
+  let actual: string;
+  try {
+    actual = contentDigest(entry.files);
+  } catch {
+    actual = '(invalid)';
+  }
+  if (actual !== entry.digest) {
+    throw new AgentHubError(
+      'VALIDATION',
+      `invalid lock entry for ${name} in ${file}: its files hash to ${actual}, not the recorded digest ${entry.digest}`,
+      { path: file, skill: name, expected: entry.digest, actual },
+    );
+  }
+}
+
 /** Parse lock text; throws AgentHubError('VALIDATION') naming `file`. */
 export function parseLock(text: string, file: string): LockFile {
   let raw: unknown;
@@ -72,7 +93,9 @@ export function parseLock(text: string, file: string): LockFile {
       },
     );
   }
-  return parsed.data as LockFile;
+  const lock = parsed.data as LockFile;
+  for (const [name, entry] of Object.entries(lock.skills)) assertConsistent(name, entry, file);
+  return lock;
 }
 
 /** Read a lock file. Missing → empty lock. Invalid → AgentHubError('VALIDATION'). */
@@ -83,7 +106,7 @@ export async function readLock(file: string): Promise<LockFile> {
 }
 
 /** Validate one lock entry (snapshot entry.json). */
-export function parseLockEntry(raw: unknown, file: string): LockEntry {
+export function parseLockEntry(raw: unknown, file: string, name = 'the skill'): LockEntry {
   const parsed = lockEntrySchema.safeParse(raw);
   if (!parsed.success) {
     throw new AgentHubError(
@@ -94,7 +117,9 @@ export function parseLockEntry(raw: unknown, file: string): LockEntry {
       },
     );
   }
-  return parsed.data as LockEntry;
+  const entry = parsed.data as LockEntry;
+  assertConsistent(name, entry, file);
+  return entry;
 }
 
 /** Recursively sort object keys (arrays keep their order). */

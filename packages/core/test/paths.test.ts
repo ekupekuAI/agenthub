@@ -86,6 +86,31 @@ describe('checkPackagePath', () => {
     expect(checkPackagePath(`dir/${'n'.repeat(100)}`)).toBeNull();
   });
 
+  it.each([
+    ['no-break space', 'a b.md'],
+    ['ideographic space', 'a　b.md'],
+    ['Hangul filler', 'ㅤ.md'],
+    ['halfwidth Hangul filler', 'aﾠ.md'],
+    ['division slash', 'scripts∕run.sh'],
+    ['fraction slash', 'scripts⁄run.sh'],
+    ['fullwidth solidus', 'scripts／run.sh'],
+    ['fullwidth reverse solidus', 'scripts＼run.sh'],
+    ['variation selector', 'a️.md'],
+    ['variation selector supplement', 'a\u{e0100}.md'],
+    ['combining grapheme joiner', 'a͏.md'],
+    ['byte order mark', '﻿SKILL.md'],
+    ['segment ending in a no-break space', 'dir /a.md'],
+    ['em space', 'a b.md'],
+    ['line separator', 'a b.md'],
+  ])('rejects the invisible or confusable %s', (_label, path) => {
+    expect(checkPackagePath(path)).toEqual(expect.any(String));
+  });
+
+  it('shows invisible characters escaped in the message', () => {
+    expect(checkPackagePath('a b.md')).toContain('\\u00a0');
+    expect(checkPackagePath('a\u009bb.md')).toContain('\\u009b');
+  });
+
   it('names the problem in the message', () => {
     expect(checkPackagePath('../evil')).toMatch(/"\.\."/);
     expect(checkPackagePath('/abs')).toMatch(/absolute/);

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { ValidationIssue } from '../src/index';
 import { parseSkillMd, validateFrontmatter } from '../src/index';
-import { catchError, issueCodes, skillMd, toCrlf } from './helpers';
+import { catchError, hasControlChar, issueCodes, skillMd, toCrlf } from './helpers';
 
 const base = { name: 'web-testing', description: 'Test web apps.' };
 
@@ -26,6 +26,24 @@ describe('validateFrontmatter: name', () => {
     ['', 'name.length'],
   ])('rejects %j with %s', (name, code) => {
     expect(codes(validateFrontmatter({ ...base, name }), 'error')).toContain(code);
+  });
+
+  it.each(['nul', 'con', 'aux', 'prn', 'com1', 'com9', 'lpt1', 'lpt9'])(
+    'rejects the Windows device name %s',
+    (name) => {
+      expect(codes(validateFrontmatter({ ...base, name }), 'error')).toEqual(['name.reserved']);
+    },
+  );
+
+  it('allows names that only contain a device name', () => {
+    expect(validateFrontmatter({ ...base, name: 'console' })).toEqual([]);
+    expect(validateFrontmatter({ ...base, name: 'com10' })).toEqual([]);
+    expect(validateFrontmatter({ ...base, name: 'nul-tools' })).toEqual([]);
+  });
+
+  it('escapes control characters when quoting a bad name', () => {
+    const issues = validateFrontmatter({ ...base, name: 'a\u001b[2Jb' });
+    for (const issue of issues) expect(hasControlChar(issue.message)).toBe(false);
   });
 
   it('requires name', () => {

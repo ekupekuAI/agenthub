@@ -1,38 +1,22 @@
-import type { DetectContext, RunResult } from '@agenthub/core';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import type { DetectContext, InstallPlan, RunResult } from '@agenthub/core';
+import { resolveRegistry } from '@agenthub/core';
 import { describe, expect, it } from 'vitest';
-import { parseConfigValue } from '../src/commands/config';
+import { normalizeFileRegistry, parseConfigValue } from '../src/commands/config';
 import { parseAgentIds } from '../src/commands/options';
 import {
+  addClaudeRelocationWarning,
+  adjustUnknownRequirements,
   createRegistry,
   createRequirementProbe,
   firstVersionToken,
+  neutralProbeCwd,
   parseAgentsEnv,
   resolvePaths,
 } from '../src/wiring';
-
-function fakeContext(commands: Record<string, RunResult>): DetectContext & { ran: string[] } {
-  const ran: string[] = [];
-  return {
-    home: '/home/test',
-    env: {},
-    platform: 'linux',
-    ran,
-    async which(command) {
-      return command in commands ? `/usr/bin/${command}` : null;
-    },
-    async run(command, args) {
-      ran.push([command, ...args].join(' '));
-      const name = command.split('/').pop() ?? command;
-      return commands[name] ?? { code: null, stdout: '', stderr: 'not found' };
-    },
-    async exists() {
-      return false;
-    },
-    async listDir() {
-      return [];
-    },
-  };
-}
 
 describe('AGENTHUB_AGENTS', () => {
   it('synthesizes agent environments with optional confidence', () => {
@@ -59,29 +43,168 @@ describe('--agent', () => {
   });
 });
 
+/**
+ * A context whose `which` resolves every name (so nothing is hidden by a missing PATH entry)
+ * and a runner that records every execution.
+ */
+function everythingOnPath(
+  outputs: Record<string, RunResult>,
+  opts: { binDir?: string } = {},
+): {
+  ctx: DetectContext;
+  ran: string[];
+  runner: (file: string, args: string[]) => Promise<RunResult>;
+} {
+  const ran: string[] = [];
+  const binDir = opts.binDir ?? join(tmpdir(), 'agenthub-probe-bin');
+  return {
+    ran,
+    ctx: {
+      home: '/home/test',
+      env: {},
+      platform: process.platform,
+      async which(command) {
+        return join(binDir, process.platform === 'win32' ? `${command}.exe` : command);
+      },
+      async run(command, args) {
+        ran.push([command, ...args].join(' '));
+        return { code: 0, stdout: '9.9.9', stderr: '' };
+      },
+      async exists() {
+        return false;
+      },
+      async listDir() {
+        return [];
+      },
+    },
+    async runner(file, args) {
+      ran.push([file, ...args].join(' '));
+      const base = basename(file).replace(/\.exe$/i, '');
+      return outputs[base] ?? { code: 1, stdout: '', stderr: 'unexpected' };
+    },
+  };
+}
+
 describe('requirement probe', () => {
-  it('reports the running node version', async () => {
-    const probe = createRequirementProbe(fakeContext({}));
+  it('reports the running node version without running anything', async () => {
+    const { ctx, ran, runner } = everythingOnPath({});
+    const probe = createRequirementProbe(ctx, { cwd: process.cwd(), runner });
     expect(await probe.runtime('node')).toBe(process.versions.node);
+    expect(await probe.runtime('nodejs')).toBe(process.versions.node);
+    expect(ran).toEqual([]);
   });
 
-  it('tries python3, python, then py', async () => {
-    const ctx = fakeContext({ py: { code: 0, stdout: 'Python 3.12.4\n', stderr: '' } });
-    const probe = createRequirementProbe(ctx);
+  it('tries python3, python, then py with fixed arguments', async () => {
+    const { ctx, ran, runner } = everythingOnPath({
+      python3: { code: 1, stdout: '', stderr: 'Python was not found' },
+      python: { code: 1, stdout: '', stderr: '' },
+      py: { code: 0, stdout: 'Python 3.12.4\n', stderr: '' },
+    });
+    const probe = createRequirementProbe(ctx, { cwd: process.cwd(), runner });
     expect(await probe.runtime('python')).toBe('3.12.4');
+    expect(ran.map((line) => basename(line))).toEqual([
+      expect.stringMatching(/^python3(\.exe)? --version$/),
+      expect.stringMatching(/^python(\.exe)? --version$/),
+      expect.stringMatching(/^py(\.exe)? --version$/),
+    ]);
   });
 
-  it('reads other runtimes from <cmd> --version and never runs unsafe names', async () => {
-    const ctx = fakeContext({ deno: { code: 0, stdout: 'deno 2.1.4 (stable)', stderr: '' } });
-    const probe = createRequirementProbe(ctx);
+  it('version-probes only allowlisted runtimes, each with fixed arguments', async () => {
+    const { ctx, ran, runner } = everythingOnPath({
+      deno: { code: 0, stdout: 'deno 2.1.4 (stable)', stderr: '' },
+      go: { code: 0, stdout: 'go version go1.23.2 linux/amd64', stderr: '' },
+      java: { code: 0, stdout: '', stderr: 'openjdk version "21.0.2" 2024-01-16' },
+    });
+    const probe = createRequirementProbe(ctx, { cwd: process.cwd(), runner });
     expect(await probe.runtime('deno')).toBe('2.1.4');
+    expect(await probe.runtime('go')).toBe('1.23.2');
+    expect(await probe.runtime('java')).toBe('21.0.2');
+    expect(ran.map((line) => basename(line))).toEqual([
+      expect.stringMatching(/^deno(\.exe)? --version$/),
+      expect.stringMatching(/^go(\.exe)? version$/),
+      expect.stringMatching(/^java(\.exe)? -version$/),
+    ]);
+  });
+
+  it('never executes a program named by a manifest that is not on the allowlist', async () => {
+    const { ctx, ran, runner } = everythingOnPath({});
+    const probe = createRequirementProbe(ctx, { cwd: process.cwd(), runner });
+    for (const name of ['yarn', 'mvn', 'calc', 'shutdown', 'shutdown.exe', 'evilrt', 'php']) {
+      expect(await probe.runtime(name)).toBeNull();
+      // Present on PATH, so it is reported as "cannot be checked", not as missing.
+      expect(probe.unknown(name)).toMatch(/does not run/);
+    }
     expect(await probe.runtime('../evil')).toBeNull();
-    expect(await probe.runtime('shutdown')).toBeNull();
-    expect(ctx.ran.every((line) => !line.includes('evil') && !line.includes('shutdown'))).toBe(
-      true,
-    );
-    expect(await probe.command('deno')).toBe(true);
+    expect(probe.unknown('../evil')).toBeUndefined();
+    expect(ran).toEqual([]);
+    // Commands are looked up on PATH, never run.
+    expect(await probe.command('evilrt')).toBe(true);
     expect(await probe.command('/bin/sh')).toBe(false);
+    expect(ran).toEqual([]);
+  });
+
+  it('reports an absent non-allowlisted runtime as missing (no execution)', async () => {
+    const { ctx, ran, runner } = everythingOnPath({});
+    const probe = createRequirementProbe(
+      { ...ctx, which: async () => null },
+      { cwd: process.cwd(), runner },
+    );
+    expect(await probe.runtime('php')).toBeNull();
+    expect(probe.unknown('php')).toBeUndefined();
+    expect(ran).toEqual([]);
+  });
+
+  it('does not run allowlisted runtimes resolved inside the project or the working directory', async () => {
+    const project = await mkdtemp(join(tmpdir(), 'agenthub-probe-project-'));
+    try {
+      const { ctx, ran, runner } = everythingOnPath(
+        { deno: { code: 0, stdout: 'deno 2.1.4', stderr: '' } },
+        { binDir: join(project, 'node_modules', '.bin') },
+      );
+      const inCwd = createRequirementProbe(ctx, { cwd: project, runner });
+      expect(await inCwd.runtime('deno')).toBeNull();
+      expect(inCwd.unknown('deno')).toMatch(/inside the project/);
+      const inProject = createRequirementProbe(ctx, {
+        cwd: tmpdir(),
+        projectRoot: () => project,
+        runner,
+      });
+      expect(await inProject.runtime('deno')).toBeNull();
+      expect(inProject.unknown('deno')).toMatch(/inside the project/);
+      expect(ran).toEqual([]);
+    } finally {
+      await rm(project, { recursive: true, force: true });
+    }
+  });
+
+  it('runs probes from a neutral folder', () => {
+    const cwd = neutralProbeCwd();
+    expect(cwd).not.toBe(process.cwd());
+    expect(isAbsolute(cwd)).toBe(true);
+  });
+
+  it('turns an unknown-runtime blocker into an unchecked requirement with a hint', () => {
+    const plan = {
+      skill: { name: 'demo', version: '1.0.0', digest: 'sha256:x' },
+      requirements: [
+        { kind: 'runtime', name: 'php', constraint: '>=8', found: null, ok: false },
+        { kind: 'runtime', name: 'ruby', constraint: '>=3', found: null, ok: false },
+      ],
+      blockers: [
+        { code: 'INCOMPATIBLE', message: 'demo requires php >=8, php was not found' },
+        { code: 'INCOMPATIBLE', message: 'demo requires ruby >=3, ruby was not found' },
+      ],
+      hints: [],
+    } as unknown as InstallPlan;
+    const adjusted = adjustUnknownRequirements(plan, {
+      unknown: (name) => (name === 'php' ? 'agenthub does not run php' : undefined),
+    });
+    expect(adjusted.requirements[0]).toMatchObject({ name: 'php', ok: null });
+    expect(adjusted.requirements[1]).toMatchObject({ name: 'ruby', ok: false });
+    expect(adjusted.blockers.map((b) => b.message)).toEqual([
+      'demo requires ruby >=3, ruby was not found',
+    ]);
+    expect(adjusted.hints.join('\n')).toMatch(/php/);
   });
 
   it('extracts the first version token', () => {
@@ -100,6 +223,30 @@ describe('registry and paths', () => {
     );
   });
 
+  it('refuses network file registries from project config', () => {
+    const unc = [
+      'file://attacker.example/share',
+      'file:\\\\attacker.example\\share\\',
+      'file://///attacker.example/share',
+    ];
+    for (const value of unc) {
+      expect(() => createRegistry(value, tmpdir()), value).toThrow(
+        expect.objectContaining({ code: 'USAGE' }),
+      );
+    }
+    if (process.platform === 'win32') {
+      // What a project config's `file://host/share` turns into (core may refuse it first).
+      expect(() =>
+        createRegistry(
+          resolveRegistry('file://attacker.example/share', 'C:/repo/.agenthub'),
+          tmpdir(),
+        ),
+      ).toThrow(/network path/);
+    }
+    // Local folders are fine.
+    expect(createRegistry(`file:${tmpdir()}`, tmpdir()).id).toContain('file:');
+  });
+
   it('honors AGENTHUB_USER_HOME and AGENTHUB_HOME', () => {
     const paths = resolvePaths({ AGENTHUB_USER_HOME: '/tmp/h', AGENTHUB_HOME: '/tmp/s' });
     expect(paths.home.replaceAll('\\', '/')).toMatch(/\/tmp\/h$/);
@@ -112,5 +259,46 @@ describe('registry and paths', () => {
     expect(parseConfigValue('telemetry', 'false')).toBe(false);
     expect(() => parseConfigValue('channel', 'nightly')).toThrow(/stable/);
     expect(() => parseConfigValue('registry', 'http://example.com')).toThrow(/https/);
+  });
+
+  it('stores file registries so they resolve to the folder the user meant', () => {
+    const project = resolve(tmpdir(), 'cfg-project');
+    const file = join(project, '.agenthub', 'config.json');
+    const cwd = project;
+    const expected = `file:${join(project, 'reg')}`;
+    // Relative to where the command was typed, stored relative to the config file.
+    const stored = normalizeFileRegistry('file:./reg', { cwd, file, relative: true });
+    expect(stored).toBe('file:../reg');
+    expect(resolveRegistry(stored, dirname(file))).toBe(expected);
+    // file:// URLs become paths.
+    const url = pathToFileURL(join(project, 'reg')).href;
+    expect(
+      resolveRegistry(normalizeFileRegistry(url, { cwd, file, relative: true }), dirname(file)),
+    ).toBe(expected);
+    // User config: absolute.
+    expect(normalizeFileRegistry('file:reg', { cwd, file, relative: false })).toBe(expected);
+    expect(() => normalizeFileRegistry('file:', { cwd, file, relative: false })).toThrow(/empty/);
+  });
+});
+
+describe('plan checks', () => {
+  const userPlan = (agents: string[]) =>
+    ({
+      scope: 'user',
+      targets: [{ dir: '.claude/skills', agents, action: 'create' }],
+      issues: [],
+    }) as unknown as InstallPlan;
+
+  it('warns when $CLAUDE_CONFIG_DIR moves the user skills folder of claude-code', () => {
+    const moved = { skillsDir: '/elsewhere/claude/skills' };
+    const warned = addClaudeRelocationWarning(userPlan(['claude-code']), moved);
+    expect(warned.issues).toEqual([
+      expect.objectContaining({ level: 'warning', code: 'agent.claude-config-dir' }),
+    ]);
+    expect(warned.issues[0]?.message).toContain('/elsewhere/claude/skills');
+    expect(addClaudeRelocationWarning(userPlan(['claude-code']), undefined).issues).toEqual([]);
+    expect(addClaudeRelocationWarning(userPlan(['cursor']), moved).issues).toEqual([]);
+    const project = { ...userPlan(['claude-code']), scope: 'project' } as InstallPlan;
+    expect(addClaudeRelocationWarning(project, moved).issues).toEqual([]);
   });
 });

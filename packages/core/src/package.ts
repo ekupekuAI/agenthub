@@ -5,8 +5,8 @@ import { AgentHubError } from './errors';
 import { contentDigest, fileHash } from './hash';
 import { DEFAULT_LIMITS } from './limits';
 import { MANIFEST_FILE, parseManifest } from './manifest';
-import { normalizeFile } from './normalize';
-import { checkPackagePath, comparePaths, findCaseCollisions } from './paths';
+import { checkFileEncoding, isTextContent, normalizeFile } from './normalize';
+import { checkPackagePath, comparePaths, escapeForDisplay, findCaseCollisions } from './paths';
 import { parseSkillMd } from './skillmd';
 import type {
   PackageFile,
@@ -18,14 +18,32 @@ import type {
 
 export const SKILL_FILE = 'SKILL.md';
 
-/** Names never included when loading a skill from a folder (design §5.3). */
+/**
+ * Names never part of a skill (design §5.3): skipped when loading a skill from a folder and
+ * rejected, in any letter case and at any depth, in archives and in-memory builds.
+ */
 export const EXCLUDED_NAMES: ReadonlySet<string> = new Set([
   '.git',
   'node_modules',
   '.agenthub',
   '.DS_Store',
   'Thumbs.db',
+  'desktop.ini',
 ]);
+
+const EXCLUDED_LOWER: ReadonlySet<string> = new Set(
+  [...EXCLUDED_NAMES].map((name) => name.toLowerCase()),
+);
+
+/** True when one path segment is an excluded name (compared case-insensitively). */
+export function isExcludedName(segment: string): boolean {
+  return EXCLUDED_LOWER.has(segment.toLowerCase());
+}
+
+/** The first segment of `path` that is an excluded name, or null. */
+export function excludedSegment(path: string): string | null {
+  return path.split('/').find(isExcludedName) ?? null;
+}
 
 export interface RawFile {
   path: string;
@@ -65,17 +83,37 @@ export function checkRawFiles(files: readonly RawFile[], limits: PackageLimits):
   let total = 0;
   const seen = new Set<string>();
   for (const file of files) {
+    const shown = escapeForDisplay(file.path);
     const problem = checkPackagePath(file.path, limits);
-    if (problem !== null) issues.push(pathError('path.unsafe', problem, file.path));
+    if (problem !== null) {
+      issues.push(pathError('path.unsafe', problem, file.path));
+    } else {
+      const excluded = excludedSegment(file.path);
+      if (excluded !== null) {
+        issues.push(
+          pathError(
+            'path.excluded',
+            `path "${shown}" contains "${excluded}", which is never part of a skill package`,
+            file.path,
+          ),
+        );
+      }
+      // SKILL.md and agenthub.yaml must be strict UTF-8; buildSkillPackage reports them itself.
+      const encoding =
+        file.path === SKILL_FILE || file.path === MANIFEST_FILE
+          ? null
+          : checkFileEncoding(file.path, file.content);
+      if (encoding !== null) issues.push(pathError('file.encoding', encoding, file.path));
+    }
     if (seen.has(file.path)) {
-      issues.push(pathError('path.duplicate', `duplicate path "${file.path}"`, file.path));
+      issues.push(pathError('path.duplicate', `duplicate path "${shown}"`, file.path));
     }
     seen.add(file.path);
     if (file.content.length > limits.maxFileBytes) {
       issues.push(
         pathError(
           'file.too-large',
-          `file "${file.path}" is ${file.content.length} bytes; the limit is ${limits.maxFileBytes}`,
+          `file "${shown}" is ${file.content.length} bytes; the limit is ${limits.maxFileBytes}`,
           file.path,
         ),
       );
@@ -112,9 +150,30 @@ export function checkRawFiles(files: readonly RawFile[], limits: PackageLimits):
   return issues;
 }
 
+/**
+ * Strict UTF-8 decode (no NUL, no invalid bytes) for SKILL.md and agenthub.yaml. A leading byte
+ * order mark is kept so that exactly one is stripped later, by the parser.
+ */
 function decodeText(file: PackageFile): string | null {
-  if (file.kind !== 'text') return null;
-  return new TextDecoder('utf-8').decode(file.content);
+  if (!isTextContent(file.content)) return null;
+  return new TextDecoder('utf-8', { ignoreBOM: true }).decode(file.content);
+}
+
+/** Prefix manifest issue messages with the file name, so errors say which file is wrong. */
+function manifestIssue(issue: ValidationIssue): ValidationIssue {
+  const prefix = `${MANIFEST_FILE}: `;
+  return issue.message.startsWith(prefix) ? issue : { ...issue, message: prefix + issue.message };
+}
+
+/**
+ * Version used when neither the caller nor agenthub.yaml gives one: a prerelease of 0.0.0 that
+ * carries the first 12 hex digits of the content digest, so it is valid semver, accepted by
+ * {@link buildSkillPackage}'s own version check, and different for different contents.
+ */
+function localVersion(digest: string): string {
+  const hex = digest.slice('sha256:'.length, 'sha256:'.length + 12);
+  // A numeric prerelease identifier may not have a leading zero.
+  return /^0\d*$/.test(hex) ? `0.0.0-local.x${hex}` : `0.0.0-local.${hex}`;
 }
 
 /**
@@ -179,7 +238,7 @@ export function buildSkillPackage(
       } catch (cause) {
         if (!(cause instanceof AgentHubError) || cause.code !== 'VALIDATION') throw cause;
         const details = cause.details as { issues?: ValidationIssue[] } | undefined;
-        issues.push(...(details?.issues ?? []));
+        issues.push(...(details?.issues ?? []).map(manifestIssue));
       }
     }
   }
@@ -198,10 +257,7 @@ export function buildSkillPackage(
     files.map((file) => [file.path, fileHash(file.content)]),
   );
   const digest = contentDigest(fileHashes);
-  const version =
-    opts.version ??
-    manifest?.version ??
-    `0.0.0-local+${digest.slice('sha256:'.length, 'sha256:'.length + 8)}`;
+  const version = opts.version ?? manifest?.version ?? localVersion(digest);
 
   return {
     name: parsed.frontmatter.name,
@@ -231,7 +287,7 @@ function walkFailure(code: string, message: string, path: string): never {
 
 /**
  * Load a skill from a folder. Symlinks (and any non-regular file) inside the folder are
- * rejected; `.git`, `node_modules`, `.agenthub`, `.DS_Store` and `Thumbs.db` are skipped.
+ * rejected; the {@link EXCLUDED_NAMES} (any letter case) are skipped.
  * The folder's own name must equal the frontmatter `name`.
  */
 export async function loadSkillFromDir(
@@ -262,7 +318,7 @@ export async function loadSkillFromDir(
     }
     names.sort();
     for (const name of names) {
-      if (EXCLUDED_NAMES.has(name)) continue;
+      if (isExcludedName(name)) continue;
       const childSegments = [...segments, name];
       const relative = childSegments.join('/');
       const childPath = join(absolute, name);
