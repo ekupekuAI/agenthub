@@ -2,6 +2,7 @@
  * Registry schema (MVP §5). The SQL in ./migrate.ts creates the same tables; keep both in sync.
  */
 import {
+  bigint,
   date,
   index,
   integer,
@@ -30,12 +31,49 @@ export const publishers = pgTable('publishers', {
   id: uuid('id').primaryKey(),
   userId: uuid('user_id').references(() => users.id),
   displayName: text('display_name').notNull().unique(),
-  /** SHA-256 (hex) of the publisher token. The token itself is never stored. */
-  tokenHash: text('token_hash').notNull().unique(),
+  /**
+   * SHA-256 (hex) of the publisher's first (admin-issued) token; null for accounts created by
+   * GitHub sign-in. Superseded by publisher_tokens, which holds every token; kept for
+   * compatibility. The token itself is never stored.
+   */
+  tokenHash: text('token_hash').unique(),
   verifiedAt: ts('verified_at'),
   createdAt: ts('created_at').notNull().defaultNow(),
   /** Set when an administrator suspended the publisher: its token stops working. */
   disabledAt: ts('disabled_at'),
+  /** GitHub account id (numeric, stable): the only key used to match a GitHub sign-in. */
+  githubUserId: bigint('github_user_id', { mode: 'number' }).unique(
+    'publishers_github_user_id_key',
+  ),
+  /** GitHub login at the last sign-in. Display only: logins can be renamed and reused. */
+  githubLogin: text('github_login'),
+  lastLoginAt: ts('last_login_at'),
+});
+
+/** Named publisher tokens (CLI and API). Only the SHA-256 (hex) of each token is stored. */
+export const publisherTokens = pgTable(
+  'publisher_tokens',
+  {
+    id: uuid('id').primaryKey(),
+    publisherId: uuid('publisher_id')
+      .notNull()
+      .references(() => publishers.id),
+    name: text('name').notNull(),
+    tokenHash: text('token_hash').notNull().unique(),
+    createdAt: ts('created_at').notNull().defaultNow(),
+    lastUsedAt: ts('last_used_at'),
+    revokedAt: ts('revoked_at'),
+  },
+  (t) => [index('publisher_tokens_publisher_idx').on(t.publisherId)],
+);
+
+/**
+ * Single-use and revoked nonces of publisher sign-in: signed-out sessions ('session:<nonce>')
+ * and consumed OAuth states ('oauth:<sha256 of state>'). Rows are pruned after expiry.
+ */
+export const authNonces = pgTable('auth_nonces', {
+  nonce: text('nonce').primaryKey(),
+  expiresAt: ts('expires_at').notNull(),
 });
 
 export const agents = pgTable('agents', {
@@ -57,6 +95,18 @@ export const skills = pgTable('skills', {
     .references(() => publishers.id),
   createdAt: ts('created_at').notNull().defaultNow(),
   updatedAt: ts('updated_at').notNull().defaultNow(),
+  /**
+   * Name review (src/lib/names.ts): 'held' while a new name waits for an administrator
+   * (reserved, or looks like another publisher's name). Every version of a held skill is
+   * quarantined; approving a version clears the hold.
+   */
+  nameStatus: text('name_status', { enum: ['clear', 'held'] })
+    .notNull()
+    .default('clear'),
+  /** Why the name is held, e.g. "name-review: looks like web-testing". */
+  nameReviewReason: text('name_review_reason'),
+  /** The existing name this one collides with, when held as a lookalike. */
+  nameConflict: text('name_conflict'),
 });
 
 export type VersionStatus = 'active' | 'quarantined' | 'revoked';
@@ -192,6 +242,19 @@ export const adminSessionRevocations = pgTable('admin_session_revocations', {
   expiresAt: ts('expires_at').notNull(),
 });
 
+/**
+ * Retired names: written when every version of a skill is revoked. A retired name can never
+ * be claimed by another publisher; rows are never deleted.
+ */
+export const nameTombstones = pgTable('name_tombstones', {
+  slug: text('slug').primaryKey(),
+  publisherId: uuid('publisher_id')
+    .notNull()
+    .references(() => publishers.id),
+  reason: text('reason').notNull(),
+  createdAt: ts('created_at').notNull().defaultNow(),
+});
+
 export const schema = {
   users,
   publishers,
@@ -205,4 +268,7 @@ export const schema = {
   installCounts,
   revocations,
   adminSessionRevocations,
+  nameTombstones,
+  publisherTokens,
+  authNonces,
 };

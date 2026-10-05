@@ -27,6 +27,7 @@ import { type DbHandle, getDatabase } from '../db/client';
 import {
   adminSessionRevocations,
   installCounts,
+  nameTombstones,
   publishers,
   requirements,
   revocations,
@@ -37,7 +38,13 @@ import {
 } from '../db/schema';
 import { type ArtifactStore, LocalFsStore, StorageError, storageKeyFor } from '../storage';
 import { VercelBlobStore } from '../storage-blob';
+import {
+  authenticatePublisherToken,
+  insertPublisherToken,
+  revokeAllPublisherTokens,
+} from './accounts';
 import type {
+  NameReview,
   PublisherRef,
   ResolveResult,
   ScanOutcome,
@@ -46,8 +53,9 @@ import type {
   SkillInfoVersion,
   VersionStatus,
 } from './api-types';
-import { generatePublisherToken, hashesEqual, hashToken, isWellFormedPublisherToken } from './auth';
+import { hashToken } from './auth';
 import { ApiError } from './errors';
+import { checkNewName, type NameCheck } from './names';
 import { type AnalyzedFile, defaultScanRunner, type ScanRunner } from './scan-runner';
 import { cleanText, hasControlChars, stripNulDeep } from './text';
 import { AGENTS, type Agent, SLUG_RE } from './validation';
@@ -71,7 +79,15 @@ export interface PublishSummary {
   findingsTotal?: number;
   /** Why the version was quarantined, when it was. */
   statusReason?: string | null;
+  /** Name review state of the skill after this publish. */
+  nameReview?: NameReview;
   warnings: { code: string; message: string; path?: string }[];
+}
+
+/** Name review as the admin queue shows it: with the colliding name, when there is one. */
+export interface QueueNameReview extends NameReview {
+  /** Existing skill name this one collides with (held lookalikes only). */
+  conflict?: string;
 }
 
 export type FileEntry = AnalyzedFile;
@@ -103,6 +119,8 @@ export interface QueueItem {
   createdAt: string;
   digest: string;
   scan: SkillInfoVersion['scan'] | null;
+  /** Name review of the skill; `held` means the name itself needs a decision. */
+  nameReview?: QueueNameReview;
 }
 
 export interface PublisherSkillSummary {
@@ -165,6 +183,9 @@ const skillColumns = {
   publisherId: skills.publisherId,
   createdAt: skills.createdAt,
   updatedAt: skills.updatedAt,
+  nameStatus: skills.nameStatus,
+  nameReviewReason: skills.nameReviewReason,
+  nameConflict: skills.nameConflict,
 };
 
 type VersionRow = {
@@ -192,7 +213,30 @@ type SkillRow = {
   publisherId: string;
   createdAt: Date;
   updatedAt: Date;
+  nameStatus: 'clear' | 'held';
+  nameReviewReason: string | null;
+  nameConflict: string | null;
 };
+
+/** Advisory lock key serializing the name check of new names ("name" in ASCII). */
+const NAME_LOCK_KEY = 0x6e616d65;
+
+/** Public name review of a skill row. */
+function nameReviewOf(skill: SkillRow): NameReview {
+  return skill.nameStatus === 'held'
+    ? { status: 'held', reason: skill.nameReviewReason ?? 'name-review: held' }
+    : { status: 'clear' };
+}
+
+/** Public name review of a new-name check (null: the check did not run). */
+function publicNameReview(check: NameCheck | null): NameReview {
+  return check?.status === 'held' ? { status: 'held', reason: check.reason } : { status: 'clear' };
+}
+
+/** Append a cause to a status reason ("a; b"). */
+function joinReason(reason: string | null, cause: string): string {
+  return reason ? `${reason}; ${cause}` : cause;
+}
 
 function escapeLike(term: string): string {
   return term.replace(/[\\%_]/g, (c) => `\\${c}`);
@@ -291,14 +335,22 @@ export class Registry {
     displayName: string,
     verified: boolean,
   ): Promise<{ id: string; displayName: string; verified: boolean; token: string }> {
-    const token = generatePublisherToken();
     const id = randomUUID();
+    let token = '';
     try {
-      await this.db.insert(publishers).values({
-        id,
-        displayName,
-        tokenHash: hashToken(token),
-        verifiedAt: verified ? this.now() : null,
+      await this.db.transaction(async (tx) => {
+        await tx.insert(publishers).values({
+          id,
+          displayName,
+          verifiedAt: verified ? this.now() : null,
+        });
+        // Every token lives in publisher_tokens; token_hash keeps the first one for older
+        // deployments sharing the database.
+        token = (await insertPublisherToken(tx, id, 'default', this.now())).token;
+        await tx
+          .update(publishers)
+          .set({ tokenHash: hashToken(token) })
+          .where(eq(publishers.id, id));
       });
     } catch (error) {
       if (uniqueViolation(error) !== null) {
@@ -323,31 +375,42 @@ export class Registry {
    * plus constant-time confirmation.
    */
   async authenticatePublisher(token: string | null | undefined): Promise<PublisherRow | null> {
-    if (!token || !isWellFormedPublisherToken(token)) return null;
-    const presented = hashToken(token);
-    const rows = await this.db
-      .select()
-      .from(publishers)
-      .where(eq(publishers.tokenHash, presented))
-      .limit(1);
-    const row = rows[0];
-    if (!row || !hashesEqual(presented, row.tokenHash)) return null;
-    if (row.disabledAt !== null) return null;
-    return row;
+    return authenticatePublisherToken(this.db, token, this.now());
   }
 
-  /** Replace a publisher's token. The old token stops working immediately. */
+  /**
+   * Replace a publisher's tokens with one new token: every other token (also those the
+   * publisher created in the dashboard) stops working immediately.
+   */
   async rotatePublisherToken(displayName: string): Promise<{ displayName: string; token: string }> {
-    const token = generatePublisherToken();
+    const publisher = await this.findPublisherByName(displayName);
+    if (!publisher) throw new ApiError('NOT_FOUND', `Publisher "${displayName}" was not found.`);
+    let token = '';
+    await this.db.transaction(async (tx) => {
+      await revokeAllPublisherTokens(tx, publisher.id, this.now());
+      token = (await insertPublisherToken(tx, publisher.id, 'admin-issued', this.now())).token;
+      await tx
+        .update(publishers)
+        .set({ tokenHash: hashToken(token) })
+        .where(eq(publishers.id, publisher.id));
+    });
+    return { displayName, token };
+  }
+
+  /** Mark a publisher verified (or not), e.g. after confirming a GitHub sign-up's identity. */
+  async setPublisherVerified(
+    displayName: string,
+    verified: boolean,
+  ): Promise<{ displayName: string; verified: boolean }> {
     const updated = await this.db
       .update(publishers)
-      .set({ tokenHash: hashToken(token) })
+      .set({ verifiedAt: verified ? this.now() : null })
       .where(eq(publishers.displayName, displayName))
       .returning({ displayName: publishers.displayName });
     if (updated.length === 0) {
       throw new ApiError('NOT_FOUND', `Publisher "${displayName}" was not found.`);
     }
-    return { displayName, token };
+    return { displayName, verified };
   }
 
   /** Suspend (or reinstate) a publisher: a suspended publisher's token is refused. */
@@ -440,6 +503,18 @@ export class Registry {
 
     // Ownership, immutability and quota checks before anything is written.
     const now = this.now();
+    // A retired name (every version revoked) is never handed to another publisher.
+    const [tombstone] = await this.db
+      .select({ publisherId: nameTombstones.publisherId })
+      .from(nameTombstones)
+      .where(eq(nameTombstones.slug, slug))
+      .limit(1);
+    if (tombstone && tombstone.publisherId !== publisherId) {
+      throw new ApiError(
+        'CONFLICT',
+        `The name "${slug}" is retired and cannot be claimed by another publisher.`,
+      );
+    }
     const existing = await this.skillBySlug(slug);
     if (existing && existing.publisherId !== publisherId) {
       throw new ApiError('CONFLICT', `The name "${slug}" belongs to another publisher.`);
@@ -493,6 +568,13 @@ export class Registry {
         }
       }
     }
+    // A held name holds every version until an administrator approves one. A new name is
+    // checked inside the transaction below.
+    if (existing?.nameStatus === 'held') {
+      status = 'quarantined';
+      statusReason = joinReason(statusReason, nameReviewOf(existing).reason as string);
+    }
+    let nameCheck: NameCheck | null = null;
 
     const manifest = pkg.manifest ? stripNulDeep(pkg.manifest) : null;
     const frontmatter = stripNulDeep(pkg.frontmatter);
@@ -523,6 +605,12 @@ export class Registry {
       await this.db.transaction(async (tx) => {
         let skillId = existing?.id;
         if (!skillId) {
+          const check = await this.reviewNewName(tx, slug, publisherId);
+          nameCheck = check;
+          if (check.status === 'held') {
+            status = 'quarantined';
+            statusReason = joinReason(statusReason, check.reason);
+          }
           skillId = randomUUID();
           await tx.insert(skills).values({
             id: skillId,
@@ -532,6 +620,10 @@ export class Registry {
             publisherId,
             createdAt: now,
             updatedAt: now,
+            nameStatus: check.status,
+            nameReviewReason: check.status === 'held' ? check.reason : null,
+            nameConflict:
+              check.status === 'held' && check.kind === 'lookalike' ? check.conflict : null,
           });
         } else if (status === 'active') {
           // Only an active version may change what search and the skill page show.
@@ -613,8 +705,28 @@ export class Registry {
       findings: analysis.findings,
       findingsTotal: analysis.findingsTotal,
       statusReason,
+      nameReview: existing ? nameReviewOf(existing) : publicNameReview(nameCheck),
       warnings: pkg.issues,
     };
+  }
+
+  /**
+   * Name review of a brand-new name (src/lib/names.ts), run inside the publish transaction
+   * under an advisory lock, so two lookalikes published at the same moment cannot both pass.
+   * Only names another publisher holds without an open review count: a held name protects
+   * nothing until an administrator approves it.
+   */
+  private async reviewNewName(
+    tx: Pick<Db, 'select' | 'execute'>,
+    slug: string,
+    publisherId: string,
+  ): Promise<NameCheck> {
+    await tx.execute(sql`select pg_advisory_xact_lock(${NAME_LOCK_KEY})`);
+    const others = await tx
+      .select({ slug: skills.slug, publisherId: skills.publisherId })
+      .from(skills)
+      .where(and(ne(skills.publisherId, publisherId), eq(skills.nameStatus, 'clear')));
+    return checkNewName(slug, publisherId, others);
   }
 
   private async enforcePublishQuota(
@@ -934,6 +1046,8 @@ export class Registry {
         agents: info?.agents ?? [],
         scanOutcome: info?.scan?.outcome,
         updatedAt: skill.updatedAt.toISOString(),
+        firstPublishedAt: skill.createdAt.toISOString(),
+        nameReview: nameReviewOf(skill),
       });
     }
     return results;
@@ -981,6 +1095,8 @@ export class Registry {
       publisher: publisherRef(pubs.get(skill.publisherId)),
       latest: latestRow ? (described.get(latestRow.id) ?? null) : null,
       versions: rows.map((r) => described.get(r.id) as SkillInfoVersion),
+      firstPublishedAt: skill.createdAt.toISOString(),
+      nameReview: nameReviewOf(skill),
     };
 
     let readme = '';
@@ -1181,6 +1297,13 @@ export class Registry {
     const row = await this.requireVersion(slug, version);
     const now = this.now();
     await this.db.transaction(async (tx) => {
+      // Row lock: concurrent revokes of one skill's last versions must see each other, so the
+      // name is retired exactly when nothing is left.
+      const [owner] = await tx
+        .select({ publisherId: skills.publisherId })
+        .from(skills)
+        .where(eq(skills.id, row.skillId))
+        .for('update');
       await tx
         .update(skillVersions)
         .set({
@@ -1193,6 +1316,17 @@ export class Registry {
         .insert(revocations)
         .values({ skillVersionId: row.id, reason: why, createdAt: now })
         .onConflictDoUpdate({ target: revocations.skillVersionId, set: { reason: why } });
+      // Every version revoked: retire the name. Only its owner may publish under it again.
+      const [left] = await tx
+        .select({ n: count() })
+        .from(skillVersions)
+        .where(and(eq(skillVersions.skillId, row.skillId), ne(skillVersions.status, 'revoked')));
+      if (owner && (left?.n ?? 0) === 0) {
+        await tx
+          .insert(nameTombstones)
+          .values({ slug, publisherId: owner.publisherId, reason: why, createdAt: now })
+          .onConflictDoNothing();
+      }
     });
     return { slug, version, status: 'revoked', reason: why };
   }
@@ -1211,17 +1345,28 @@ export class Registry {
     if (status === 'revoked') return this.revoke(slug, version, reason);
     const why = requireReason(reason);
     const row = await this.requireVersion(slug, version);
-    const updated = await this.db
-      .update(skillVersions)
-      .set({ status, statusReason: why })
-      .where(
-        and(
-          eq(skillVersions.id, row.id),
-          ne(skillVersions.status, 'revoked'),
-          sql`not exists (select 1 from revocations r where r.skill_version_id = ${skillVersions.id})`,
-        ),
-      )
-      .returning({ id: skillVersions.id });
+    const updated = await this.db.transaction(async (tx) => {
+      const changed = await tx
+        .update(skillVersions)
+        .set({ status, statusReason: why })
+        .where(
+          and(
+            eq(skillVersions.id, row.id),
+            ne(skillVersions.status, 'revoked'),
+            sql`not exists (select 1 from revocations r where r.skill_version_id = ${skillVersions.id})`,
+          ),
+        )
+        .returning({ id: skillVersions.id });
+      if (changed.length > 0 && status === 'active') {
+        // Approving a version of a held skill approves its name too, so later versions are
+        // not held for the name again.
+        await tx
+          .update(skills)
+          .set({ nameStatus: 'clear', nameReviewReason: null, nameConflict: null })
+          .where(and(eq(skills.id, row.skillId), eq(skills.nameStatus, 'held')));
+      }
+      return changed;
+    });
     if (updated.length === 0) {
       throw new ApiError('CONFLICT', `${slug}@${version} is revoked; revocation is final.`);
     }
@@ -1353,6 +1498,12 @@ export class Registry {
         createdAt: r.createdAt.toISOString(),
         digest: r.digest,
         scan: described.get(r.id)?.scan ?? null,
+        nameReview: {
+          ...nameReviewOf(skill),
+          ...(skill.nameStatus === 'held' && skill.nameConflict
+            ? { conflict: skill.nameConflict }
+            : {}),
+        },
       };
     });
   }

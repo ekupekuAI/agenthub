@@ -4,6 +4,8 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { cn } from '../../lib/cn';
+import { AccountMenu, type HeaderAccount, Monogram, SignOutForm } from '../auth/AccountMenu';
+import { GitHubMark, START_HREF } from '../auth/GitHubSignIn';
 import { CommandPalette } from './CommandPalette';
 import { Container } from './Container';
 import { MenuIcon, SearchIcon, XIcon } from './icons';
@@ -16,6 +18,30 @@ import { Wordmark } from './Wordmark';
 export interface SiteHeaderProps {
   /** Theme from the cookie, forwarded to the ThemeToggle. */
   initialTheme?: Theme;
+  /** The publisher signed in with GitHub, if any. */
+  account?: HeaderAccount | null;
+  /** True when GitHub sign-in is configured on this registry. */
+  githubSignIn?: boolean;
+}
+
+/** Signed out: a full-navigation link to the GitHub start route, or /signin when unconfigured. */
+function SignInLink({ enabled, className }: { enabled: boolean; className?: string }) {
+  return (
+    <a
+      href={enabled ? START_HREF : '/signin'}
+      className={cn(
+        'tap-target inline-flex h-9 items-center gap-2 rounded-control border border-border-strong bg-surface-1 px-2.5 text-small text-text no-underline transition-colors duration-150 hover:bg-surface-2',
+        className,
+      )}
+    >
+      <GitHubMark size={15} />
+      <span className="hidden xl:inline">Sign in with GitHub</span>
+      <span className="xl:hidden" aria-hidden="true">
+        Sign in
+      </span>
+      <span className="sr-only xl:hidden">Sign in with GitHub</span>
+    </a>
+  );
 }
 
 const NAV = [
@@ -36,7 +62,11 @@ function isCurrent(href: string, pathname: string): boolean {
  * the command palette, the theme toggle and (under 768px) a menu button that opens a sheet.
  * A hairline appears under it once the page is scrolled.
  */
-export function SiteHeader({ initialTheme }: SiteHeaderProps) {
+export function SiteHeader({
+  initialTheme,
+  account = null,
+  githubSignIn = false,
+}: SiteHeaderProps) {
   const pathname = usePathname();
   const [scrolled, setScrolled] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -109,6 +139,9 @@ export function SiteHeader({ initialTheme }: SiteHeaderProps) {
               </span>
             </button>
             <ThemeToggle initialTheme={initialTheme} />
+            <div className="hidden md:block">
+              {account ? <AccountMenu account={account} /> : <SignInLink enabled={githubSignIn} />}
+            </div>
             <button
               type="button"
               onClick={() => setMenuOpen(true)}
@@ -166,6 +199,20 @@ export function SiteHeader({ initialTheme }: SiteHeaderProps) {
           </ul>
         </nav>
         <div className="border-border border-t p-3">
+          {account ? (
+            <div className="mb-3 grid gap-1">
+              <p className="m-0 flex items-center gap-2 px-1 pb-1 text-small text-text">
+                <Monogram text={account.login} />
+                <span className="truncate">{account.login}</span>
+              </p>
+              <SignOutForm />
+            </div>
+          ) : (
+            <SignInLink
+              enabled={githubSignIn}
+              className="mb-3 flex min-h-11 w-full justify-center"
+            />
+          )}
           <button
             type="button"
             onClick={() => {

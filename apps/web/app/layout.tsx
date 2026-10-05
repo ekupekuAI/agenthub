@@ -7,7 +7,8 @@ import { SiteFooter } from '../src/components/ui/SiteFooter';
 import { SiteHeader } from '../src/components/ui/SiteHeader';
 import { SkipLink } from '../src/components/ui/SkipLink';
 import { parseTheme, THEME_COLORS, THEME_COOKIE } from '../src/components/ui/theme';
-import { securityContact } from '../src/config';
+import { githubOAuth, securityContact } from '../src/config';
+import { currentPublisher } from '../src/lib/action-guard';
 import { cn } from '../src/lib/cn';
 import './globals.css';
 
@@ -91,6 +92,14 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
   // The theme cookie is rendered into the markup, so the first paint is already correct.
   const theme = await storedTheme();
   const contact = securityContact();
+  // Only reads the database when a session cookie is present.
+  const me = await currentPublisher().catch(() => null);
+  const account = me
+    ? {
+        name: me.publisher.displayName,
+        login: me.publisher.githubLogin ?? me.publisher.displayName,
+      }
+    : null;
 
   return (
     <html
@@ -114,7 +123,11 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
         </noscript>
         <MotionProvider>
           <SkipLink />
-          <SiteHeader initialTheme={theme} />
+          <SiteHeader
+            initialTheme={theme}
+            account={account}
+            githubSignIn={githubOAuth() !== null}
+          />
           <main id="main" tabIndex={-1} className="flex-1">
             {children}
           </main>

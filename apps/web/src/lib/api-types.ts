@@ -63,6 +63,20 @@ export interface SearchResult {
   agents: Agent[];
   scanOutcome?: ScanOutcome;
   updatedAt?: string;
+  /** ISO time the name was first published (extension). */
+  firstPublishedAt?: string;
+  /** Name review state (extension). */
+  nameReview?: NameReview;
+}
+
+/**
+ * Registry name review (extension). `held`: the name is reserved or looks like another
+ * publisher's name and waits for an administrator; its versions stay quarantined meanwhile.
+ * `reason` is set when held, e.g. "name-review: looks like web-testing".
+ */
+export interface NameReview {
+  status: 'clear' | 'held';
+  reason?: string;
 }
 
 export interface SkillInfo {
@@ -73,6 +87,10 @@ export interface SkillInfo {
   publisher?: PublisherRef;
   latest: SkillInfoVersion | null;
   versions: SkillInfoVersion[];
+  /** ISO time the name was first published (extension). */
+  firstPublishedAt?: string;
+  /** Name review state (extension). */
+  nameReview?: NameReview;
 }
 
 export interface ResolveResult {

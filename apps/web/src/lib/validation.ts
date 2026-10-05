@@ -97,7 +97,7 @@ export const releaseNotesSchema = z
   .optional();
 export const managePublisherSchema = z.object({
   displayName: z.string().trim().min(1).max(64),
-  action: z.enum(['rotate-token', 'disable', 'enable']),
+  action: z.enum(['rotate-token', 'disable', 'enable', 'verify', 'unverify']),
 });
 /** Optional paging of GET /skills/:slug/versions (newest first). */
 export const versionsQuerySchema = z.object({

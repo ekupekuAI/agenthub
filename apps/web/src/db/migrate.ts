@@ -143,6 +143,88 @@ ON CONFLICT (id) DO NOTHING;
 /** Identifies this version of MIGRATION_SQL in the `agenthub_migrations` table. */
 export const MIGRATION_ID = `schema-${createHash('sha256').update(MIGRATION_SQL).digest('hex').slice(0, 16)}`;
 
+/** A later schema change, recorded under its own id in `agenthub_migrations`. */
+export interface MigrationStep {
+  id: string;
+  sql: string;
+}
+
+function stepId(name: string, sql: string): string {
+  return `${name}-${createHash('sha256').update(sql).digest('hex').slice(0, 16)}`;
+}
+
+/**
+ * Step "publisher-accounts" (2026-10-06): GitHub sign-in and named publisher tokens.
+ * - publishers gain github_user_id (unique), github_login and last_login_at; token_hash becomes
+ *   optional (accounts created by GitHub sign-in have no admin-issued token).
+ * - publisher_tokens holds every publisher token (hash only). Existing tokens are copied in as
+ *   "default", so they keep working.
+ * - auth_nonces records signed-out publisher sessions and consumed OAuth states.
+ */
+export const PUBLISHER_ACCOUNTS_SQL = `
+ALTER TABLE publishers ADD COLUMN IF NOT EXISTS github_user_id bigint;
+ALTER TABLE publishers ADD COLUMN IF NOT EXISTS github_login text;
+ALTER TABLE publishers ADD COLUMN IF NOT EXISTS last_login_at timestamptz;
+CREATE UNIQUE INDEX IF NOT EXISTS publishers_github_user_id_key ON publishers (github_user_id);
+ALTER TABLE publishers ALTER COLUMN token_hash DROP NOT NULL;
+
+CREATE TABLE IF NOT EXISTS publisher_tokens (
+  id uuid PRIMARY KEY,
+  publisher_id uuid NOT NULL REFERENCES publishers(id),
+  name text NOT NULL,
+  token_hash text NOT NULL UNIQUE,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  last_used_at timestamptz,
+  revoked_at timestamptz
+);
+CREATE INDEX IF NOT EXISTS publisher_tokens_publisher_idx ON publisher_tokens (publisher_id);
+
+INSERT INTO publisher_tokens (id, publisher_id, name, token_hash, created_at)
+SELECT gen_random_uuid(), p.id, 'default', p.token_hash, p.created_at
+FROM publishers p
+WHERE p.token_hash IS NOT NULL
+ON CONFLICT (token_hash) DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS auth_nonces (
+  nonce text PRIMARY KEY,
+  expires_at timestamptz NOT NULL
+);
+`;
+
+/**
+ * Step "name-protection" (2026-10-06): registry name review (src/lib/names.ts).
+ * - skills gain name_status ('clear' | 'held'), name_review_reason and name_conflict. Existing
+ *   skills default to 'clear'.
+ * - name_tombstones records retired names (every version revoked). Rows are never deleted.
+ */
+export const NAME_PROTECTION_SQL = `
+ALTER TABLE skills ADD COLUMN IF NOT EXISTS name_status text NOT NULL DEFAULT 'clear'
+  CHECK (name_status IN ('clear', 'held'));
+ALTER TABLE skills ADD COLUMN IF NOT EXISTS name_review_reason text;
+ALTER TABLE skills ADD COLUMN IF NOT EXISTS name_conflict text;
+
+CREATE TABLE IF NOT EXISTS name_tombstones (
+  slug text PRIMARY KEY,
+  publisher_id uuid NOT NULL REFERENCES publishers(id),
+  reason text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+`;
+
+/**
+ * Schema steps applied in order after MIGRATION_SQL, each versioned separately. Every
+ * statement must be idempotent. Append new steps; do not edit one that has been deployed.
+ */
+export const MIGRATION_STEPS: readonly MigrationStep[] = [
+  { id: stepId('publisher-accounts', PUBLISHER_ACCOUNTS_SQL), sql: PUBLISHER_ACCOUNTS_SQL },
+  { id: stepId('name-protection', NAME_PROTECTION_SQL), sql: NAME_PROTECTION_SQL },
+];
+
+/** MIGRATION_SQL followed by every step, in the order they are applied. */
+export function allMigrations(): MigrationStep[] {
+  return [{ id: MIGRATION_ID, sql: MIGRATION_SQL }, ...MIGRATION_STEPS];
+}
+
 /** Advisory lock key serializing migrations across processes ("agenthub" in ASCII). */
 export const MIGRATION_LOCK_KEY = 0x61676e74;
 
@@ -157,23 +239,25 @@ function pgCode(error: unknown): string | undefined {
 }
 
 /**
- * Apply MIGRATION_SQL to a shared Postgres database, once per schema version, safely under
- * concurrent cold starts: the work runs in one transaction holding a transaction-scoped
- * advisory lock (compatible with PgBouncer transaction pooling), and the applied version is
- * recorded in `agenthub_migrations`. A process that finds its version recorded skips all of
- * it without taking the lock. Every statement is idempotent anyway, so a partial history or a
- * concurrent older deployment cannot break it.
+ * Apply MIGRATION_SQL and the MIGRATION_STEPS to a shared Postgres database, each once per
+ * version, safely under concurrent cold starts: the work runs in one transaction holding a
+ * transaction-scoped advisory lock (compatible with PgBouncer transaction pooling), and each
+ * applied version is recorded in `agenthub_migrations`. A process that finds every version
+ * recorded skips all of it without taking the lock. Every statement is idempotent anyway, so a
+ * partial history or a concurrent older deployment cannot break it.
  */
 export async function migrateSharedDatabase(
   connect: () => Promise<MigrationClient>,
 ): Promise<'applied' | 'current'> {
+  const steps = allMigrations();
+  const ids = steps.map((step) => step.id);
   const client = await connect();
   try {
     try {
-      const done = await client.query('SELECT 1 FROM agenthub_migrations WHERE id = $1', [
-        MIGRATION_ID,
+      const done = await client.query('SELECT 1 FROM agenthub_migrations WHERE id = ANY($1)', [
+        ids,
       ]);
-      if (done.rowCount) return 'current';
+      if (done.rowCount === ids.length) return 'current';
     } catch (error) {
       // 42P01: the table does not exist yet (first start).
       if (pgCode(error) !== '42P01') throw error;
@@ -184,20 +268,21 @@ export async function migrateSharedDatabase(
       await client.query(
         'CREATE TABLE IF NOT EXISTS agenthub_migrations (id text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())',
       );
-      const done = await client.query('SELECT 1 FROM agenthub_migrations WHERE id = $1', [
-        MIGRATION_ID,
-      ]);
-      if (done.rowCount) {
-        await client.query('COMMIT');
-        return 'current';
+      let applied = false;
+      for (const step of steps) {
+        const done = await client.query('SELECT 1 FROM agenthub_migrations WHERE id = $1', [
+          step.id,
+        ]);
+        if (done.rowCount) continue;
+        await client.query(step.sql);
+        await client.query(
+          'INSERT INTO agenthub_migrations (id) VALUES ($1) ON CONFLICT (id) DO NOTHING',
+          [step.id],
+        );
+        applied = true;
       }
-      await client.query(MIGRATION_SQL);
-      await client.query(
-        'INSERT INTO agenthub_migrations (id) VALUES ($1) ON CONFLICT (id) DO NOTHING',
-        [MIGRATION_ID],
-      );
       await client.query('COMMIT');
-      return 'applied';
+      return applied ? 'applied' : 'current';
     } catch (error) {
       await client.query('ROLLBACK').catch(() => {});
       throw error;

@@ -2,7 +2,12 @@
 
 import type { PublishField } from '../../src/components/publish/package-rules';
 import { MAX_UPLOAD_BYTES } from '../../src/config';
-import { guardOrigin, limitFailedAttempt, limitIdentity } from '../../src/lib/action-guard';
+import {
+  currentPublisher,
+  guardOrigin,
+  limitFailedAttempt,
+  limitIdentity,
+} from '../../src/lib/action-guard';
 import { isApiError } from '../../src/lib/errors';
 import { getRegistry, type PublishSummary } from '../../src/lib/registry';
 import { releaseNotesSchema, versionSchema } from '../../src/lib/validation';
@@ -24,7 +29,10 @@ export async function publishAction(
   const file = formData.get('file');
   const notes = formData.get('releaseNotes');
   const versionField = formData.get('version');
-  if (typeof token !== 'string' || token.trim() === '') {
+  // Signed in with GitHub, the form has no token field: the session identifies the publisher.
+  const usesToken = typeof token === 'string' && token.trim() !== '';
+  const session = usesToken ? null : await currentPublisher();
+  if (!usesToken && !session) {
     return { status: 'error', field: 'token', message: 'Enter your publisher token.' };
   }
   if (!(file instanceof File) || file.size === 0) {
@@ -60,7 +68,9 @@ export async function publishAction(
 
   try {
     const registry = await getRegistry();
-    const publisher = await registry.authenticatePublisher(token.trim());
+    const publisher = session
+      ? session.publisher
+      : await registry.authenticatePublisher(String(token).trim());
     if (!publisher) {
       const limited = await limitFailedAttempt();
       if (limited) return { status: 'error', message: limited };

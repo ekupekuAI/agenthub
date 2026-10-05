@@ -4,7 +4,7 @@ import type { PGlite } from '@electric-sql/pglite';
 import type { Pool } from '@neondatabase/serverless';
 import type { PgDatabase, PgQueryResultHKT } from 'drizzle-orm/pg-core';
 import { databaseUrl, dataDir, onVercel } from '../config';
-import { MIGRATION_SQL, type MigrationClient, migrateSharedDatabase } from './migrate';
+import { allMigrations, type MigrationClient, migrateSharedDatabase } from './migrate';
 import { schema } from './schema';
 
 /**
@@ -37,7 +37,7 @@ async function openPgliteClient(dir?: string): Promise<PGlite> {
   const { PGlite } = await import('@electric-sql/pglite');
   if (dir) mkdirSync(dir, { recursive: true });
   const client = dir ? new PGlite(dir) : new PGlite();
-  await client.exec(MIGRATION_SQL);
+  for (const step of allMigrations()) await client.exec(step.sql);
   return client;
 }
 

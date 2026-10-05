@@ -196,3 +196,25 @@ test('home, skill page and guidelines log no console errors or CSP violations', 
   }
   expect(errors).toEqual([]);
 });
+
+test('header offers Sign in with GitHub and explains when it is not configured', async ({
+  page,
+  request,
+}) => {
+  await page.goto('/');
+  const signIn = page.getByRole('banner').getByRole('link', { name: 'Sign in with GitHub' });
+  await expect(signIn).toBeVisible();
+  // This server has no GitHub OAuth app: the link leads to the explanation page.
+  await signIn.click();
+  await expect(page).toHaveURL(/\/signin$/);
+  await expect(page.getByRole('button', { name: 'Sign in with GitHub' })).toBeDisabled();
+  await expect(page.getByText('GitHub sign-in is not configured').first()).toBeVisible();
+
+  const start = await request.get('/api/auth/github/start', { maxRedirects: 0 });
+  expect(start.status()).toBe(503);
+  const signOut = await request.post('/api/auth/signout', {
+    headers: { origin: 'https://evil.example' },
+    maxRedirects: 0,
+  });
+  expect(signOut.status()).toBe(403);
+});

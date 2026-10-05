@@ -108,7 +108,16 @@ function Stat({ label, value, tone }: { label: string; value: number; tone?: 'wa
   );
 }
 
-function PublisherSkills({ state, onChangeToken }: { state: Ready; onChangeToken: () => void }) {
+export function PublisherSkills({
+  state,
+  onChangeToken,
+  eyebrow = 'Signed in for this page',
+}: {
+  state: Pick<Ready, 'publisher' | 'skills'>;
+  /** Token mode only: offers to switch to another token. */
+  onChangeToken?: () => void;
+  eyebrow?: string;
+}) {
   const headingRef = useRef<HTMLHeadingElement | null>(null);
   const versions = state.skills.flatMap((skill) => skill.versions);
   const quarantined = versions.filter((v) => v.status === 'quarantined').length;
@@ -123,7 +132,7 @@ function PublisherSkills({ state, onChangeToken }: { state: Ready; onChangeToken
     <section aria-labelledby="mine-heading" className="flex min-w-0 flex-col gap-8">
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div className="min-w-0">
-          <p className="eyebrow">Signed in for this page</p>
+          <p className="eyebrow">{eyebrow}</p>
           <h2
             id="mine-heading"
             ref={headingRef}
@@ -135,9 +144,11 @@ function PublisherSkills({ state, onChangeToken }: { state: Ready; onChangeToken
           </h2>
         </div>
         <div className="flex flex-wrap gap-2">
-          <Button variant="ghost" size="sm" onClick={onChangeToken} leadingIcon={<KeyIcon />}>
-            Use another token
-          </Button>
+          {onChangeToken ? (
+            <Button variant="ghost" size="sm" onClick={onChangeToken} leadingIcon={<KeyIcon />}>
+              Use another token
+            </Button>
+          ) : null}
           <Button href="/publish" size="sm" leadingIcon={<PlusIcon />}>
             Publish a version
           </Button>

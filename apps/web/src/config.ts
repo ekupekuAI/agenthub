@@ -96,3 +96,59 @@ export function scanTimeoutMs(): number {
 export function scanConcurrency(): number {
   return intFromEnv('AGENTHUB_SCAN_CONCURRENCY', 2, 1, 16);
 }
+
+/**
+ * GitHub OAuth app credentials (GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET), or null when GitHub
+ * sign-in is not configured. Both are required.
+ */
+export function githubOAuth(): { clientId: string; clientSecret: string } | null {
+  const clientId = process.env.GITHUB_CLIENT_ID?.trim();
+  const clientSecret = process.env.GITHUB_CLIENT_SECRET?.trim();
+  if (!clientId || !clientSecret) return null;
+  if (!/^[A-Za-z0-9._-]{1,128}$/.test(clientId) || clientSecret.length < 20) return null;
+  return { clientId, clientSecret };
+}
+
+function isLoopbackHost(hostname: string): boolean {
+  return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]';
+}
+
+/**
+ * The registry's public origin from AGENTHUB_PUBLIC_URL (for example
+ * https://agenthub-registry.vercel.app), or null when unset or invalid. Only an origin is
+ * accepted (no path, query or credentials), and plain http only for a loopback host.
+ */
+export function publicUrl(): URL | null {
+  const raw = process.env.AGENTHUB_PUBLIC_URL?.trim();
+  if (!raw) return null;
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return null;
+  }
+  if (url.username || url.password || url.search || url.hash) return null;
+  if (url.pathname !== '/' && url.pathname !== '') return null;
+  if (url.protocol === 'https:') return url;
+  if (url.protocol === 'http:' && isLoopbackHost(url.hostname)) return url;
+  return null;
+}
+
+/**
+ * Origin used to build OAuth callback URLs. AGENTHUB_PUBLIC_URL when set; otherwise the
+ * request's own origin only when its host is a loopback address (local development). Any other
+ * host is never trusted, so a forged Host header cannot change where GitHub sends the code.
+ */
+export function oauthBaseUrl(request: { url: string }): URL | null {
+  const configured = publicUrl();
+  if (configured) return configured;
+  let url: URL;
+  try {
+    url = new URL(request.url);
+  } catch {
+    return null;
+  }
+  if (!isLoopbackHost(url.hostname)) return null;
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+  return new URL(url.origin);
+}

@@ -178,6 +178,42 @@ with `[agenthub]`, for example `DATABASE_URL is not set` or `BLOB_READ_WRITE_TOK
 (add the variable, then redeploy), or `package scanner: bundled worker …` (the scanner
 started normally).
 
+## Enable GitHub sign-in
+
+Publishers can sign in with GitHub instead of asking you for a token.
+
+1. Open <https://github.com/settings/developers> → **OAuth Apps** → **New OAuth App**.
+2. Fill in:
+   - **Application name**: `agenthub registry`
+   - **Homepage URL**: `https://agenthub-registry.vercel.app`
+   - **Authorization callback URL**:
+     `https://agenthub-registry.vercel.app/api/auth/github/callback`
+   - Leave **Enable Device Flow** off. Select **Register application**.
+3. Copy the **Client ID**. Select **Generate a new client secret** and copy the secret (it is
+   shown once).
+4. In Vercel open **Settings** → **Environment Variables** and add (Production):
+
+   | Name | Value |
+   |---|---|
+   | `GITHUB_CLIENT_ID` | the client ID |
+   | `GITHUB_CLIENT_SECRET` | the client secret |
+   | `AGENTHUB_PUBLIC_URL` | `https://agenthub-registry.vercel.app` |
+
+   Keep `AGENTHUB_SESSION_SECRET` set: it signs the sign-in cookies (without it they are signed
+   with a key derived from the client secret).
+5. Redeploy (**Deployments** → **⋯** → **Redeploy**). The header now shows **Sign in with
+   GitHub**. Without these variables it links to a page that says sign-in is not configured.
+
+Sign-in only works on the address in `AGENTHUB_PUBLIC_URL`; preview deployments send visitors
+there to sign in. A first sign-in creates an unverified publisher named after the GitHub
+login. To mark it verified, call `POST /api/v1/admin/publishers/manage` with
+`{ "displayName": "<name>", "action": "verify" }` and the admin token.
+
+**Local development:** register a second OAuth app with Homepage URL `http://localhost:3000`
+and callback `http://localhost:3000/api/auth/github/callback`, and put its
+`GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET` in `apps/web/.env.local`.
+`AGENTHUB_PUBLIC_URL` is not needed on `localhost`.
+
 ## Updating
 
 Every push to the default branch deploys automatically; pushes to other branches create

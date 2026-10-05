@@ -10,11 +10,15 @@ export const dynamic = 'force-dynamic';
  * POST /api/v1/admin/publishers/manage  { displayName, action } (admin)
  * - 'rotate-token': issue a new token (shown once); the old one stops working.
  * - 'disable' / 'enable': suspend or reinstate the publisher; a suspended token is refused.
+ * - 'verify' / 'unverify': set or clear the verified mark (e.g. after checking a GitHub sign-up).
  */
 export const POST = apiRoute('admin', async (request) => {
   requireAdminBearer(request);
   const { displayName, action } = managePublisherSchema.parse(await readJson(request));
   const registry = await getRegistry();
   if (action === 'rotate-token') return jsonOk(await registry.rotatePublisherToken(displayName));
+  if (action === 'verify' || action === 'unverify') {
+    return jsonOk(await registry.setPublisherVerified(displayName, action === 'verify'));
+  }
   return jsonOk(await registry.setPublisherDisabled(displayName, action === 'disable'));
 });

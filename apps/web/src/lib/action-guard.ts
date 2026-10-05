@@ -1,6 +1,9 @@
 import { cookies, headers } from 'next/headers';
+import { githubOAuth } from '../config';
+import { getAccounts, type PublisherRow } from './accounts';
 import { adminEnabled, readSession, sessionCookieName } from './auth';
 import { isSameOriginStrict } from './http';
+import { publisherSessionCookieName, readPublisherSession } from './publisher-session';
 import {
   checkClientLimit,
   checkIdentityLimit,
@@ -63,4 +66,27 @@ export async function currentAdminSession(): Promise<{ nonce: string; expires: D
 
 export async function hasAdminSession(): Promise<boolean> {
   return (await currentAdminSession()) !== null;
+}
+
+export interface SignedInPublisher {
+  publisher: PublisherRow;
+  nonce: string;
+  expires: Date;
+}
+
+/**
+ * The publisher signed in with GitHub: sign-in configured, session cookie signed and not
+ * expired, not signed out, and the publisher exists and is not suspended. Null otherwise.
+ * Cheap when there is no cookie (no database query).
+ */
+export async function currentPublisher(): Promise<SignedInPublisher | null> {
+  if (!githubOAuth()) return null;
+  const jar = await cookies();
+  const session = readPublisherSession(jar.get(publisherSessionCookieName())?.value);
+  if (!session) return null;
+  const accounts = await getAccounts();
+  if (await accounts.isSessionRevoked(session.nonce)) return null;
+  const publisher = await accounts.findPublisherById(session.publisherId);
+  if (!publisher || publisher.disabledAt !== null) return null;
+  return { publisher, nonce: session.nonce, expires: session.expires };
 }

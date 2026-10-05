@@ -24,7 +24,7 @@ import { ApiError } from './errors';
  * publisher's or the administrator's quota without holding the credential. Failed credential
  * attempts are limited in the 'auth' group (per client, or shared in direct mode).
  */
-export type RateGroup = 'publish' | 'admin' | 'read' | 'page' | 'auth';
+export type RateGroup = 'publish' | 'admin' | 'read' | 'page' | 'auth' | 'signin';
 
 export interface RateLimit {
   limit: number;
@@ -38,6 +38,8 @@ export const RATE_LIMITS: Record<RateGroup, RateLimit> = {
   read: { limit: 120, windowMs: 60_000 },
   page: { limit: 300, windowMs: 60_000 },
   auth: { limit: 20, windowMs: 60_000 },
+  /** GitHub sign-in: start and callback requests. */
+  signin: { limit: 10, windowMs: 60_000 },
 };
 
 /** Limits of the single shared bucket per group in direct mode (no trusted proxy). */
@@ -47,6 +49,7 @@ export const SHARED_RATE_LIMITS: Record<RateGroup, RateLimit> = {
   read: { limit: 1200, windowMs: 60_000 },
   page: { limit: 1200, windowMs: 60_000 },
   auth: { limit: 60, windowMs: 60_000 },
+  signin: { limit: 120, windowMs: 60_000 },
 };
 
 /** Key of the shared bucket used when no client identity is available. */

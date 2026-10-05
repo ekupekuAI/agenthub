@@ -96,8 +96,11 @@ operating system.
 
 ## Publish
 
-1. Ask the registry administrator for a publisher token.
-2. Upload the `.skillpkg` on the registry's **Publish** page, or send it to the API:
+1. Select **Sign in with GitHub** on the registry. Your first sign-in creates your publisher.
+   (On a registry without GitHub sign-in, ask the administrator for a publisher token.)
+2. Upload the `.skillpkg` on the **Publish** page while signed in. For the command line or
+   CI, create a named token under **Dashboard** → **CLI tokens** (it is shown once) and send
+   the package to the API:
 
    ```bash
    curl -X POST "$REGISTRY/api/v1/publish" \

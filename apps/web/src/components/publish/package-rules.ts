@@ -43,11 +43,16 @@ export function packageFileError(file: { name: string; size: number }): string |
 }
 
 /** Checks a publish submission in the browser. An empty result means it may be sent. */
-export function validatePublishForm(data: FormData): PublishFieldErrors {
+export function validatePublishForm(
+  data: FormData,
+  opts: { requireToken?: boolean } = {},
+): PublishFieldErrors {
   const errors: PublishFieldErrors = {};
 
   const token = data.get('token');
-  if (typeof token !== 'string' || token.trim() === '') errors.token = MESSAGES.token;
+  if ((opts.requireToken ?? true) && (typeof token !== 'string' || token.trim() === '')) {
+    errors.token = MESSAGES.token;
+  }
 
   const file = data.get('file');
   if (!(file instanceof File) || (file.name === '' && file.size === 0)) {

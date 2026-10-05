@@ -4,7 +4,12 @@ import path from 'node:path';
 import { Pool } from '@neondatabase/serverless';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { type DbHandle, getDatabase, openPostgresDatabase } from '../src/db/client';
-import { MIGRATION_ID, type MigrationClient, migrateSharedDatabase } from '../src/db/migrate';
+import {
+  allMigrations,
+  MIGRATION_ID,
+  type MigrationClient,
+  migrateSharedDatabase,
+} from '../src/db/migrate';
 import { publishers } from '../src/db/schema';
 import { ApiError } from '../src/lib/errors';
 import { createArtifactStore, Registry } from '../src/lib/registry';
@@ -56,7 +61,13 @@ describe('hosted Postgres (Neon driver)', () => {
     const opened = await Promise.all([open(), open(), open(), open()]);
     expect(opened.every((h) => h.kind === 'postgres')).toBe(true);
     const applied = await neon.pglite.query<{ id: string }>('SELECT id FROM agenthub_migrations');
-    expect(applied.rows).toEqual([{ id: MIGRATION_ID }]);
+    // MIGRATION_SQL plus each separately versioned step, recorded exactly once.
+    expect(applied.rows.map((r) => r.id).sort()).toEqual(
+      allMigrations()
+        .map((step) => step.id)
+        .sort(),
+    );
+    expect(applied.rows.map((r) => r.id)).toContain(MIGRATION_ID);
     const tables = await neon.pglite.query<{ n: number }>(
       "SELECT count(*)::int AS n FROM information_schema.tables WHERE table_name IN ('skills', 'skill_versions', 'publishers', 'install_counts')",
     );

@@ -44,7 +44,9 @@ npm run start -w apps/web
 | `BLOB_READ_WRITE_TOKEN` | Vercel Blob token. Replaces the local package folder. |
 | `AGENTHUB_BLOB_ACCESS` | `private` (default) or `public`: must match how the Blob store was created. |
 | `AGENTHUB_ADMIN_TOKEN` | Enables administration. At least 32 characters. Without it, admin pages and routes answer 503. |
-| `AGENTHUB_SESSION_SECRET` | Optional, at least 32 characters. Signs admin sessions. Defaults to a key derived from the admin token. |
+| `AGENTHUB_SESSION_SECRET` | Optional, at least 32 characters. Signs admin sessions and publisher sign-in cookies. Defaults to keys derived from the admin token and the GitHub client secret. |
+| `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` | GitHub OAuth app for publisher sign-in (see [Enable GitHub sign-in](deploy-vercel.md#enable-github-sign-in)). Without both, sign-in is off and `/api/auth/*` answer 503. |
+| `AGENTHUB_PUBLIC_URL` | The registry's public origin, e.g. `https://agenthub-registry.vercel.app`. Required for GitHub sign-in on any host other than `localhost`. |
 | `AGENTHUB_TRUST_PROXY` | Number of trusted reverse proxies in front of the app (for example `1`; on Vercel, `1`). Rate limiting then uses the address appended by the outermost trusted proxy. Leave it unset when the app is reached directly: client-supplied `X-Forwarded-For` is then ignored and anonymous traffic shares one rate-limit bucket per route group. |
 | `AGENTHUB_SCAN_TIMEOUT_MS` | Time budget for validating and scanning one upload (default 15000). Uploads that exceed it are rejected. |
 | `AGENTHUB_SCAN_CONCURRENCY` | Uploads scanned at the same time (default 2). Extra uploads queue briefly, then get 429. |
@@ -68,10 +70,36 @@ Open `/admin` and sign in with the admin token. From there you can:
 - approve a release (a reason is required), revoke it, or scan it again;
 - create publishers. The publisher token is shown once.
 
+Publishers can also sign in with GitHub (when configured). The first sign-in creates an
+unverified publisher named after the GitHub login (with a suffix when the name is taken); the
+account is tied to the numeric GitHub id, so a renamed login keeps its publisher. Signed-in
+publishers publish from the site without a token and create, list and revoke named CLI tokens
+in the dashboard. Only token hashes are stored; the GitHub access token is never stored.
+
 Revocation is final: a revoked version cannot be approved or rescanned back to active, and a
 new upload whose content matches a revoked or quarantined version is held for review.
 Publishers can be suspended and their tokens rotated through
-`POST /api/v1/admin/publishers/manage` with `{ "displayName", "action": "rotate-token" | "disable" | "enable" }`.
+`POST /api/v1/admin/publishers/manage` with `{ "displayName", "action": "rotate-token" | "disable" | "enable" | "verify" | "unverify" }`.
+Rotating revokes every token of the publisher and issues one new token.
+
+### Name protection
+
+Names stay flat (no namespaces). The first publish of a new name is checked
+(`apps/web/src/lib/names.ts`); a hit is held, not rejected: the version is quarantined and the
+review queue shows a **Name review** row with the reason and the colliding skill.
+
+- **Reserved names** (`agenthub`, `admin`, `api`, `registry`, `official`, vendor and agent
+  names such as `anthropic`, `openai`, `claude`, `claude-code`, `codex`, `cursor`, `github`,
+  and route words such as `login`, `publish`, `dashboard`) are held for every publisher,
+  verified or not: `name-review: reserved name`.
+- **Lookalikes** of a name another publisher owns are held: `name-review: looks like <name>`.
+  Names are compared after lowercasing, removing `-` `_` `.`, folding `0→o 1/i→l 3→e 4→a 5→s
+  7→t rn→m vv→w cl→d`, dropping affixes (`-cli`, `-skill`, `-tool`, `-js`, `-py`,
+  `official-`, …) and plurals, and sorting words; or by Damerau-Levenshtein distance ≤ 1 from
+  5 characters (≤ 2 from 10). A publisher's own names never collide with each other.
+- **Approving** any version of a held skill (reason required) approves the name; later versions
+  publish normally. **Revoking every version** retires the name (`name_tombstones`): another
+  publisher gets 409, the original publisher may publish again (still scanned).
 
 Limits: findings stored per scan are capped at 500 (blocking findings first, with full
 counts kept); a stored README is capped at 256 KiB; each skill accepts at most 50 new
@@ -94,7 +122,13 @@ All JSON responses are `{ "ok": true, "data": … }` or
 | POST | `/api/v1/skills/:slug/revoke` | Revoke a version | admin token |
 | POST | `/api/v1/skills/:slug/status` | Approve or quarantine a version | admin token |
 | POST | `/api/v1/admin/publishers` | Create a publisher | admin token |
-| POST | `/api/v1/admin/publishers/manage` | Rotate a token, suspend or re-enable a publisher | admin token |
+| POST | `/api/v1/admin/publishers/manage` | Rotate tokens, suspend, re-enable or verify a publisher | admin token |
+| GET | `/api/auth/github/start`, `/api/auth/github/callback` | GitHub sign-in (browser) | none |
+| POST | `/api/auth/signout` | End the publisher session (same-origin form) | session |
+
+Search results and skill detail carry optional fields for client warnings: `publisher.verified`,
+`firstPublishedAt` (ISO time the name was first published) and
+`nameReview: { status: "clear" | "held", reason? }`. Publish responses carry `nameReview` too.
 
 `/versions` accepts `limit` and `offset` (up to 1000 per page). Only the latest or requested
 version carries its full findings list; other versions carry counts.

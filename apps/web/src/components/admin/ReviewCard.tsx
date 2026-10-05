@@ -113,6 +113,26 @@ export function ReviewCard({ item, actions }: ReviewCardProps) {
         </p>
       ) : null}
 
+      {item.nameReview?.status === 'held' ? (
+        <p className="flex flex-wrap items-baseline gap-x-3 gap-y-1 border-border border-t px-4 py-3 text-small sm:px-6">
+          <Badge tone="warn">Name review</Badge>
+          <span className="min-w-0 text-text [overflow-wrap:anywhere]">
+            {item.nameReview.reason}
+          </span>
+          {item.nameReview.conflict ? (
+            <span className="text-muted">
+              Existing skill:{' '}
+              <Link href={`/skills/${item.nameReview.conflict}`} className="font-mono text-mono">
+                {item.nameReview.conflict}
+              </Link>
+            </span>
+          ) : null}
+          <span className="basis-full text-muted">
+            Approving a version also approves the name; revoking every version retires it.
+          </span>
+        </p>
+      ) : null}
+
       <div className="grid gap-x-8 gap-y-6 border-border border-t bg-bg px-4 py-5 sm:px-6 sm:py-6 lg:grid-cols-[minmax(0,1fr)_22rem]">
         <section aria-labelledby={findingsId} className="min-w-0">
           <div className="mb-3 flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">

@@ -2,6 +2,7 @@ import type { Metadata } from 'next';
 import Link from 'next/link';
 import { PublishSteps } from '../../src/components/publish/PublishSteps';
 import { Callout, Container, PageHeader } from '../../src/components/ui';
+import { currentPublisher } from '../../src/lib/action-guard';
 import { PublishForm } from './PublishForm';
 
 export const metadata: Metadata = {
@@ -9,7 +10,8 @@ export const metadata: Metadata = {
   description: 'Upload a .skillpkg package. Every version is immutable and scanned on upload.',
 };
 
-export default function PublishPage() {
+export default async function PublishPage() {
+  const me = await currentPublisher();
   return (
     <>
       <PageHeader
@@ -60,7 +62,7 @@ export default function PublishPage() {
           </div>
 
           <div className="min-w-0">
-            <PublishForm />
+            <PublishForm signedInAs={me ? me.publisher.displayName : null} />
           </div>
         </div>
       </Container>

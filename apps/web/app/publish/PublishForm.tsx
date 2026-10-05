@@ -35,7 +35,8 @@ import { type PublishState, publishAction } from './actions';
 
 const NUMBER = new Intl.NumberFormat('en-US');
 
-export function PublishForm() {
+/** `signedInAs`: the publisher of the GitHub session; the form then needs no token. */
+export function PublishForm({ signedInAs = null }: { signedInAs?: string | null }) {
   const [state, action, pending] = useActionState<PublishState, FormData>(publishAction, {
     status: 'idle',
   });
@@ -70,7 +71,7 @@ export function PublishForm() {
     // Without it, the browser posts straight to the server action.
     event.preventDefault();
     const data = new FormData(event.currentTarget);
-    const found = validatePublishForm(data);
+    const found = validatePublishForm(data, { requireToken: !signedInAs });
     setClientErrors(found);
     setFileError(undefined);
     const first = PUBLISH_FIELDS.find((field) => found[field]);
@@ -108,7 +109,7 @@ export function PublishForm() {
           </div>
           <p className="inline-flex items-center gap-1.5 rounded-chip border border-border bg-surface-2 px-2 py-1 font-mono text-[0.75rem] text-muted leading-4">
             <LockIcon size={13} />
-            token never stored
+            {signedInAs ? 'signed in with GitHub' : 'token never stored'}
           </p>
         </div>
 
@@ -118,16 +119,22 @@ export function PublishForm() {
           </Callout>
         ) : null}
 
-        <TokenField
-          id="token"
-          name="token"
-          label="Publisher token"
-          required
-          disabled={pending}
-          placeholder="ahp_…"
-          error={errors.token}
-          hint="Sent only with this upload. It is never stored in your browser."
-        />
+        {signedInAs ? (
+          <p className="m-0 rounded-control border border-border bg-surface-2 px-3 py-2.5 text-muted text-small">
+            Publishing as <strong className="text-text">{signedInAs}</strong>.
+          </p>
+        ) : (
+          <TokenField
+            id="token"
+            name="token"
+            label="Publisher token"
+            required
+            disabled={pending}
+            placeholder="ahp_…"
+            error={errors.token}
+            hint="Sent only with this upload. It is never stored in your browser."
+          />
+        )}
 
         <Dropzone
           id="file"
