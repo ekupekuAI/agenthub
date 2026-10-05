@@ -1,13 +1,24 @@
 import type { ReactNode } from 'react';
+import { type BadgeTone, Badge as KitBadge } from './ui/Badge';
+import { VerifiedMark } from './ui/VerifiedMark';
 
-type Tone = 'ok' | 'warn' | 'bad' | 'info' | 'neutral';
+/*
+ * Compatibility layer for pages written before the ledger kit. New code imports from
+ * './ui' directly; this file only maps the old tone names onto the kit.
+ */
 
-const TONES: Record<Tone, string> = {
-  ok: 'bg-ok-bg text-ok-fg border-ok-line',
-  warn: 'bg-warn-bg text-warn-fg border-warn-line',
-  bad: 'bg-bad-bg text-bad-fg border-bad-line',
-  info: 'bg-info-bg text-info-fg border-info-line',
-  neutral: 'bg-raised text-ink border-line',
+export { DecisionBadge } from './ui/DecisionBadge';
+export { OutcomeBadge } from './ui/OutcomeBadge';
+export { StatusBadge } from './ui/StatusBadge';
+
+type LegacyTone = 'ok' | 'warn' | 'bad' | 'info' | 'neutral';
+
+const TONE: Record<LegacyTone, BadgeTone> = {
+  ok: 'signal',
+  warn: 'warn',
+  bad: 'block',
+  info: 'info',
+  neutral: 'neutral',
 };
 
 export function Badge({
@@ -15,63 +26,18 @@ export function Badge({
   children,
   title,
 }: {
-  tone: Tone;
+  tone: LegacyTone;
   children: ReactNode;
   title?: string;
 }) {
   return (
-    <span
-      title={title}
-      className={`inline-flex items-center gap-1 whitespace-nowrap rounded-full border px-2 py-0.5 text-xs font-semibold ${TONES[tone]}`}
-    >
+    <KitBadge tone={TONE[tone]} title={title}>
       {children}
-    </span>
-  );
-}
-
-export function StatusBadge({ status }: { status: 'active' | 'quarantined' | 'revoked' }) {
-  if (status === 'active') return <Badge tone="ok">Active</Badge>;
-  if (status === 'quarantined') return <Badge tone="warn">Quarantined</Badge>;
-  return <Badge tone="bad">Revoked</Badge>;
-}
-
-export function DecisionBadge({ decision }: { decision: 'INFO' | 'WARN' | 'BLOCK' }) {
-  const tone: Tone = decision === 'BLOCK' ? 'bad' : decision === 'WARN' ? 'warn' : 'info';
-  return <Badge tone={tone}>{decision}</Badge>;
-}
-
-/** Trust badge for a scan outcome. It never claims a skill is safe. */
-export function OutcomeBadge({ outcome }: { outcome?: 'allow' | 'confirm' | 'block' | null }) {
-  if (!outcome) return <Badge tone="neutral">Not scanned</Badge>;
-  if (outcome === 'allow') {
-    return (
-      <Badge tone="ok" title="The scanner found nothing above INFO">
-        No warnings
-      </Badge>
-    );
-  }
-  if (outcome === 'confirm') {
-    return (
-      <Badge tone="warn" title="At least one finding needs your confirmation">
-        Review warnings
-      </Badge>
-    );
-  }
-  return (
-    <Badge tone="bad" title="At least one finding is blocked by policy">
-      Blocked
-    </Badge>
+    </KitBadge>
   );
 }
 
 export function VerifiedBadge({ verified }: { verified: boolean }) {
-  if (!verified) return <Badge tone="neutral">Unverified publisher</Badge>;
-  return (
-    <Badge tone="info" title="The registry has verified this publisher's identity">
-      <svg aria-hidden="true" width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
-        <path d="M6.6 11.3 3.3 8l1.1-1.1 2.2 2.2 5-5L12.7 5.2z" />
-      </svg>
-      Verified publisher
-    </Badge>
-  );
+  if (!verified) return <KitBadge tone="neutral">Unverified publisher</KitBadge>;
+  return <VerifiedMark showLabel />;
 }

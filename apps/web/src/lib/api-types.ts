@@ -30,9 +30,20 @@ export interface SkillInfoVersion extends RegistryVersion {
   scan?: {
     scannerVersion: string;
     outcome: ScanOutcome;
+    /**
+     * Findings of the latest scan, BLOCK first, at most MAX_STORED_FINDINGS. Only the latest
+     * (and the displayed) version carries them in a skill detail; version lists and older
+     * versions return an empty list, with `findingsTruncated: true` when there were findings.
+     */
     findings: EvaluatedFinding[];
     /** ISO time of the scan (extension; not part of the CLI contract). */
     scannedAt?: string;
+    /** Findings the scan produced in total (extension). */
+    findingsTotal?: number;
+    /** True when `findings` holds fewer than `findingsTotal` entries (extension). */
+    findingsTruncated?: boolean;
+    /** Findings per decision (extension). */
+    counts?: { INFO: number; WARN: number; BLOCK: number };
   };
   releaseNotes?: string | null;
 }

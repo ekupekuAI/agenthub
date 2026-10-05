@@ -1,5 +1,6 @@
 import semver from 'semver';
 import { z } from 'zod';
+import { hasControlChars } from './text';
 
 export const AGENTS = ['claude-code', 'codex', 'cursor', 'vscode'] as const;
 export type Agent = (typeof AGENTS)[number];
@@ -64,7 +65,14 @@ export const resolveQuerySchema = z.object({
 export const slugParamsSchema = z.object({ slug: slugSchema });
 export const downloadParamsSchema = z.object({ slug: slugSchema, version: versionSchema });
 
-export const reasonSchema = z.string().trim().min(3, 'A reason is required').max(500);
+const NO_CONTROL_CHARS = 'Control characters are not allowed';
+
+export const reasonSchema = z
+  .string()
+  .trim()
+  .min(3, 'A reason is required')
+  .max(500)
+  .refine((s) => !hasControlChars(s), NO_CONTROL_CHARS);
 
 export const revokeBodySchema = z.object({ version: versionSchema, reason: reasonSchema });
 export const statusBodySchema = z.object({
@@ -82,7 +90,20 @@ export const createPublisherSchema = z.object({
     .regex(/^[A-Za-z0-9][A-Za-z0-9 ._-]*$/, 'Use letters, digits, spaces, dots, dashes'),
   verified: z.boolean().default(false),
 });
-export const releaseNotesSchema = z.string().max(5000).optional();
+export const releaseNotesSchema = z
+  .string()
+  .max(5000)
+  .refine((s) => !hasControlChars(s), NO_CONTROL_CHARS)
+  .optional();
+export const managePublisherSchema = z.object({
+  displayName: z.string().trim().min(1).max(64),
+  action: z.enum(['rotate-token', 'disable', 'enable']),
+});
+/** Optional paging of GET /skills/:slug/versions (newest first). */
+export const versionsQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(1000).optional(),
+  offset: z.coerce.number().int().min(0).max(1_000_000).optional(),
+});
 
 /** Turn URLSearchParams into a plain object (first value wins; empty values dropped). */
 export function paramsToObject(params: URLSearchParams): Record<string, string> {

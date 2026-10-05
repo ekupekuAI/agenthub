@@ -2,8 +2,8 @@ import { expect, test } from '@playwright/test';
 
 test('home loads and search finds a seeded skill', async ({ page }) => {
   await page.goto('/');
-  await expect(page.getByRole('heading', { level: 1 })).toContainText(
-    'trust layer for agent skills',
+  await expect(page.getByRole('heading', { level: 1 })).toHaveText(
+    'Install agent skills you can trust.',
   );
   await page.getByRole('searchbox', { name: 'Search' }).fill('changelog');
   await page.getByRole('button', { name: 'Search', exact: true }).click();
@@ -144,4 +144,55 @@ test('publish form uploads through the server action and reports conflicts', asy
   await expect(
     page.getByRole('alert').filter({ hasText: 'belongs to another publisher' }),
   ).toBeVisible();
+});
+
+test('Ctrl+K opens the command palette and finds a seeded skill', async ({ page }) => {
+  await page.goto('/guidelines');
+  await page.keyboard.press('Control+k');
+  const input = page.getByRole('combobox', { name: 'Search skills' });
+  await expect(input).toBeFocused();
+  await input.fill('changelog');
+  const option = page
+    .getByRole('listbox', { name: 'Results' })
+    .getByRole('option', { name: /changelog-writer/ });
+  await expect(option).toBeVisible();
+  await input.press('Enter');
+  await expect(page).toHaveURL(/\/skills\/changelog-writer$/);
+  await expect(page.getByRole('heading', { level: 1, name: 'changelog-writer' })).toBeVisible();
+});
+
+test('the theme toggle persists across a reload', async ({ page }) => {
+  await page.goto('/');
+  const html = page.locator('html');
+  // No cookie yet: the page follows the system scheme until the visitor picks one.
+  const initial =
+    (await html.getAttribute('data-theme')) ??
+    (await page.evaluate(() =>
+      window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark',
+    ));
+  const next = initial === 'dark' ? 'light' : 'dark';
+  await page
+    .getByRole('button', { name: /Switch (to (dark|light)|color) theme/ })
+    .first()
+    .click();
+  await expect(html).toHaveAttribute('data-theme', next);
+  await page.reload();
+  await expect(html).toHaveAttribute('data-theme', next);
+  const cookies = await page.context().cookies();
+  expect(cookies.find((c) => c.name === 'agenthub-theme')?.value).toBe(next);
+});
+
+test('home, skill page and guidelines log no console errors or CSP violations', async ({
+  page,
+}) => {
+  const errors: string[] = [];
+  page.on('console', (msg) => {
+    if (msg.type() === 'error') errors.push(`${page.url()}: ${msg.text()}`);
+  });
+  page.on('pageerror', (error) => errors.push(`${page.url()}: ${error.message}`));
+  for (const url of ['/', '/skills/web-testing', '/guidelines']) {
+    await page.goto(url);
+    await page.waitForLoadState('networkidle');
+  }
+  expect(errors).toEqual([]);
 });

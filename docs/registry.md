@@ -12,9 +12,11 @@ npm run seed -w apps/web      # creates two publishers and the starter skills
 npm run dev -w apps/web       # http://localhost:3000
 ```
 
-The seed prints each publisher token once. Keep the `agenthub-team` token if you want to
-publish from the website. Run the seed while the server is stopped: the embedded database
-allows one process at a time.
+The seed writes each new publisher token to `<data dir>/seed-tokens.txt` (add
+`-- --print-tokens` to print them instead). Keep the `agenthub-team` token if you want to
+publish from the website, then delete the file. The seed refuses to run with
+`NODE_ENV=production` unless `AGENTHUB_SEED_FORCE=1` is set. Run it while the server is
+stopped: the embedded database allows one process at a time.
 
 Point the CLI at it:
 
@@ -38,7 +40,9 @@ npm run start -w apps/web
 | `AGENTHUB_DATA_DIR` | Where data lives. Default: `apps/web/.data` (`pglite/` for the database, `artifacts/` for packages). |
 | `AGENTHUB_ADMIN_TOKEN` | Enables administration. At least 32 characters. Without it, admin pages and routes answer 503. |
 | `AGENTHUB_SESSION_SECRET` | Optional, at least 32 characters. Signs admin sessions. Defaults to a key derived from the admin token. |
-| `AGENTHUB_TRUST_PROXY` | Set to `1` only behind a reverse proxy that overwrites `X-Forwarded-For`. Rate limiting then uses the client address from that header. |
+| `AGENTHUB_TRUST_PROXY` | Number of trusted reverse proxies in front of the app (for example `1`). Rate limiting then uses the address appended by the outermost trusted proxy. Leave it unset when the app is reached directly: client-supplied `X-Forwarded-For` is then ignored and anonymous traffic shares one rate-limit bucket per route group. |
+| `AGENTHUB_SCAN_TIMEOUT_MS` | Time budget for validating and scanning one upload (default 15000). Uploads that exceed it are rejected. |
+| `AGENTHUB_SCAN_CONCURRENCY` | Uploads scanned at the same time (default 2). Extra uploads queue briefly, then get 429. |
 | `AGENTHUB_SECURITY_CONTACT` | Contact shown in the footer and on the Guidelines page. |
 
 Generate secrets with a password manager or:
@@ -57,6 +61,15 @@ Open `/admin` and sign in with the admin token. From there you can:
 - approve a release (a reason is required), revoke it, or scan it again;
 - create publishers. The publisher token is shown once.
 
+Revocation is final: a revoked version cannot be approved or rescanned back to active, and a
+new upload whose content matches a revoked or quarantined version is held for review.
+Publishers can be suspended and their tokens rotated through
+`POST /api/v1/admin/publishers/manage` with `{ "displayName", "action": "rotate-token" | "disable" | "enable" }`.
+
+Limits: findings stored per scan are capped at 500 (blocking findings first, with full
+counts kept); a stored README is capped at 256 KiB; each skill accepts at most 50 new
+versions a day and each publisher 200.
+
 ## API
 
 All JSON responses are `{ "ok": true, "data": … }` or
@@ -74,6 +87,10 @@ All JSON responses are `{ "ok": true, "data": … }` or
 | POST | `/api/v1/skills/:slug/revoke` | Revoke a version | admin token |
 | POST | `/api/v1/skills/:slug/status` | Approve or quarantine a version | admin token |
 | POST | `/api/v1/admin/publishers` | Create a publisher | admin token |
+| POST | `/api/v1/admin/publishers/manage` | Rotate a token, suspend or re-enable a publisher | admin token |
+
+`/versions` accepts `limit` and `offset` (up to 1000 per page). Only the latest or requested
+version carries its full findings list; other versions carry counts.
 
 Quarantined versions answer 403 on download; revoked versions answer 410.
 

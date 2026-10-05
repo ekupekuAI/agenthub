@@ -17,6 +17,8 @@ const baseHeaders = [
 const nextConfig: NextConfig = {
   poweredByHeader: false,
   reactStrictMode: true,
+  // Keep `next dev` from writing generated instruction files into the app directory.
+  agentRules: false,
   transpilePackages: ['@agenthub/core', '@agenthub/scanner'],
   serverExternalPackages: ['@electric-sql/pglite'],
   experimental: {

@@ -1,167 +1,214 @@
 'use client';
 
-import Link from 'next/link';
-import { useActionState } from 'react';
-import { DecisionBadge, OutcomeBadge, StatusBadge } from '../../src/components/Badges';
-import { findingKey, keyed } from '../../src/lib/keys';
+import {
+  type FormEvent,
+  startTransition,
+  useActionState,
+  useEffect,
+  useRef,
+  useState,
+} from 'react';
+import {
+  PublishIdle,
+  PublishPending,
+  PublishReceipt,
+} from '../../src/components/publish/PublishResult';
+import {
+  MAX_RELEASE_NOTES,
+  PACKAGE_ACCEPT,
+  PUBLISH_FIELDS,
+  type PublishFieldErrors,
+  packageFileError,
+  validatePublishForm,
+} from '../../src/components/publish/package-rules';
+import { TokenField } from '../../src/components/publish/TokenField';
+import {
+  ArrowRightIcon,
+  Button,
+  Callout,
+  Dropzone,
+  LockIcon,
+  TextareaField,
+  TextField,
+} from '../../src/components/ui';
 import { type PublishState, publishAction } from './actions';
 
-const input =
-  'w-full rounded-md border border-line bg-canvas px-3 py-2 text-ink placeholder:text-muted';
+const NUMBER = new Intl.NumberFormat('en-US');
 
 export function PublishForm() {
   const [state, action, pending] = useActionState<PublishState, FormData>(publishAction, {
     status: 'idle',
   });
+  const formRef = useRef<HTMLFormElement | null>(null);
+  const resultHeadingRef = useRef<HTMLHeadingElement | null>(null);
+  const [clientErrors, setClientErrors] = useState<PublishFieldErrors>({});
+  const [fileError, setFileError] = useState<string | undefined>();
+  const [notesLength, setNotesLength] = useState(0);
+
+  // The server's answer about one field shows under that field; anything else is a form alert.
+  const serverError = state.status === 'error' && !pending ? state : undefined;
+  const errors: PublishFieldErrors = {
+    ...(serverError?.field ? { [serverError.field]: serverError.message } : {}),
+    ...clientErrors,
+  };
+  if (fileError) errors.file = fileError;
+  const formAlert = serverError && !serverError.field ? serverError.message : undefined;
+
+  // Once the server answers, move focus to what needs attention.
+  useEffect(() => {
+    if (state.status === 'done') {
+      formRef.current?.reset();
+      setNotesLength(0);
+      resultHeadingRef.current?.focus();
+    } else if (state.status === 'error' && state.field) {
+      document.getElementById(state.field)?.focus();
+    }
+  }, [state]);
+
+  function onSubmit(event: FormEvent<HTMLFormElement>) {
+    // With JavaScript the form is sent from here, so a failed upload keeps what was entered.
+    // Without it, the browser posts straight to the server action.
+    event.preventDefault();
+    const data = new FormData(event.currentTarget);
+    const found = validatePublishForm(data);
+    setClientErrors(found);
+    setFileError(undefined);
+    const first = PUBLISH_FIELDS.find((field) => found[field]);
+    if (first) {
+      document.getElementById(first)?.focus();
+      return;
+    }
+    startTransition(() => action(data));
+  }
+
+  function onFileChange(file: File | null) {
+    setClientErrors(({ file: _replaced, ...rest }) => rest);
+    setFileError(file ? packageFileError(file) : undefined);
+  }
 
   return (
-    <div className="grid gap-8 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+    <div className="flex min-w-0 flex-col gap-8">
       <form
+        ref={formRef}
         action={action}
-        className="flex flex-col gap-5 rounded-xl border border-line bg-canvas p-5"
+        onSubmit={onSubmit}
+        noValidate
+        aria-labelledby="publish-form-title"
+        className="flex min-w-0 flex-col gap-6 rounded-panel border border-border bg-surface-1 p-5 shadow-panel sm:p-7"
       >
-        <div className="flex flex-col gap-1.5">
-          <label htmlFor="token" className="text-sm font-semibold">
-            Publisher token
-          </label>
-          <input
-            id="token"
-            name="token"
-            type="password"
-            required
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <p className="eyebrow">Upload</p>
+            <h2
+              id="publish-form-title"
+              className="mt-1.5 font-display text-[1.75rem] text-text leading-[1.15]"
+            >
+              New version
+            </h2>
+          </div>
+          <p className="inline-flex items-center gap-1.5 rounded-chip border border-border bg-surface-2 px-2 py-1 font-mono text-[0.75rem] text-muted leading-4">
+            <LockIcon size={13} />
+            token never stored
+          </p>
+        </div>
+
+        {formAlert ? (
+          <Callout tone="danger" role="alert" title="The version was not published">
+            {formAlert}
+          </Callout>
+        ) : null}
+
+        <TokenField
+          id="token"
+          name="token"
+          label="Publisher token"
+          required
+          disabled={pending}
+          placeholder="ahp_…"
+          error={errors.token}
+          hint="Sent only with this upload. It is never stored in your browser."
+        />
+
+        <Dropzone
+          id="file"
+          name="file"
+          label="Package (.skillpkg)"
+          accept={PACKAGE_ACCEPT}
+          required
+          disabled={pending}
+          error={errors.file}
+          onFileChange={onFileChange}
+          prompt={
+            <>
+              Drop a <span className="font-mono">.skillpkg</span> here, or{' '}
+              <span className="text-signal-ink underline underline-offset-4">browse</span>
+            </>
+          }
+          hint={
+            <>
+              Build it with <code>agenthub pack ./my-skill</code>. Up to 10 MiB.
+            </>
+          }
+        />
+
+        <div className="grid gap-6 sm:grid-cols-[minmax(0,12rem)_minmax(0,1fr)]">
+          <TextField
+            id="version"
+            name="version"
+            label="Version"
+            optional
+            mono
+            disabled={pending}
             autoComplete="off"
             spellCheck={false}
-            className={`${input} font-mono`}
-            aria-describedby="token-help"
+            placeholder="1.2.0"
+            maxLength={128}
+            error={errors.version}
+            hint="Only for a package without agenthub.yaml."
           />
-          <p id="token-help" className="text-xs text-muted">
-            Sent only with this upload. It is never stored in your browser.
-          </p>
-        </div>
-        <div className="flex flex-col gap-1.5">
-          <label htmlFor="file" className="text-sm font-semibold">
-            Package (.skillpkg)
-          </label>
-          <input
-            id="file"
-            name="file"
-            type="file"
-            required
-            accept=".skillpkg,application/gzip,application/octet-stream"
-            className="text-sm file:mr-3 file:rounded-md file:border file:border-line file:bg-surface file:px-3 file:py-1.5 file:text-ink"
-            aria-describedby="file-help"
-          />
-          <p id="file-help" className="text-xs text-muted">
-            Create it with <code>agenthub pack ./my-skill</code>. Limit: 10 MiB.
-          </p>
-        </div>
-        <div className="flex flex-col gap-1.5">
-          <label htmlFor="releaseNotes" className="text-sm font-semibold">
-            Release notes <span className="font-normal text-muted">(optional)</span>
-          </label>
-          <textarea
+          <TextareaField
             id="releaseNotes"
             name="releaseNotes"
-            rows={4}
-            maxLength={5000}
-            className={input}
+            label="Release notes"
+            optional
+            rows={3}
+            disabled={pending}
+            error={errors.releaseNotes}
+            onChange={(event) => setNotesLength(event.currentTarget.value.length)}
+            hint={
+              <span className={notesLength > MAX_RELEASE_NOTES ? 'text-block' : undefined}>
+                Plain text, shown on the skill page. {NUMBER.format(notesLength)} /{' '}
+                {NUMBER.format(MAX_RELEASE_NOTES)} characters
+              </span>
+            }
           />
         </div>
-        <button
-          type="submit"
-          disabled={pending}
-          className="self-start rounded-md bg-accent px-5 py-2 font-semibold text-accent-ink transition-colors hover:bg-accent-strong disabled:opacity-60"
-        >
-          {pending ? 'Uploading and scanning…' : 'Publish version'}
-        </button>
+
+        <div className="flex flex-col-reverse gap-3 border-border border-t pt-5 sm:flex-row sm:items-center sm:justify-between">
+          <p className="text-[0.8125rem] text-muted leading-5">
+            Published versions are immutable and scanned before they are listed.
+          </p>
+          <Button
+            variant="primary"
+            size="lg"
+            type="submit"
+            loading={pending}
+            trailingIcon={pending ? undefined : <ArrowRightIcon />}
+          >
+            {pending ? 'Uploading and scanning…' : 'Publish version'}
+          </Button>
+        </div>
       </form>
 
-      <section aria-labelledby="result-heading" aria-live="polite" className="min-w-0">
-        <h2 id="result-heading" className="text-base font-semibold">
-          Result
-        </h2>
-        {state.status === 'idle' ? (
-          <p className="mt-3 rounded-lg border border-dashed border-line p-5 text-sm text-muted">
-            The scan result appears here after you publish.
-          </p>
-        ) : null}
-        {state.status === 'error' ? (
-          <div
-            role="alert"
-            className="mt-3 rounded-lg border border-bad-line bg-bad-bg p-4 text-sm text-bad-fg"
-          >
-            {state.message}
-          </div>
-        ) : null}
-        {state.status === 'done' ? (
-          <div className="mt-3 flex flex-col gap-4 rounded-xl border border-line bg-canvas p-5">
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="font-semibold">
-                {state.summary.slug}@{state.summary.version}
-              </span>
-              <StatusBadge status={state.summary.status} />
-              <OutcomeBadge outcome={state.summary.outcome} />
-            </div>
-            {state.summary.status === 'quarantined' ? (
-              <p className="rounded-md border border-warn-line bg-warn-bg p-3 text-sm text-warn-fg">
-                The scanner blocked this upload, so it is quarantined. Nobody can install it until a
-                moderator reviews it. Fix the findings below and publish a new version.
-              </p>
-            ) : (
-              <p className="text-sm">
-                Published. <Link href={`/skills/${state.summary.slug}`}>View the skill page</Link>
-              </p>
-            )}
-            <dl className="grid gap-2 text-xs">
-              <div>
-                <dt className="text-muted">Content digest</dt>
-                <dd className="break-all font-mono">{state.summary.digest}</dd>
-              </div>
-              <div>
-                <dt className="text-muted">Archive digest</dt>
-                <dd className="break-all font-mono">{state.summary.archiveDigest}</dd>
-              </div>
-              <div>
-                <dt className="text-muted">Scanner</dt>
-                <dd className="font-mono">{state.summary.scannerVersion}</dd>
-              </div>
-            </dl>
-            {state.summary.findings.length > 0 ? (
-              <ul className="grid gap-2">
-                {keyed(state.summary.findings, findingKey).map(({ item: f, key }) => (
-                  <li key={key} className="rounded-md border border-line p-3 text-sm">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <DecisionBadge decision={f.decision} />
-                      <span className="font-mono text-xs">{f.ruleId}</span>
-                      <span className="font-mono text-xs text-muted">
-                        {f.file}
-                        {f.line > 0 ? `:${f.line}` : ''}
-                      </span>
-                      <span className="text-xs text-muted">
-                        {f.declared ? 'declared' : 'undeclared'}
-                      </span>
-                    </div>
-                    <p className="mt-1">{f.message}</p>
-                    <code className="mt-1 block break-all text-xs">{f.evidence}</code>
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              <p className="text-sm text-muted">No findings.</p>
-            )}
-            {state.summary.warnings.length > 0 ? (
-              <div>
-                <h3 className="text-sm font-semibold">Validation warnings</h3>
-                <ul className="mt-1 list-disc pl-5 text-sm">
-                  {state.summary.warnings.map((w) => (
-                    <li key={`${w.code}-${w.path ?? ''}`}>{w.message}</li>
-                  ))}
-                </ul>
-              </div>
-            ) : null}
-          </div>
-        ) : null}
-      </section>
+      <div className="min-w-0">
+        {pending ? (
+          <PublishPending />
+        ) : state.status === 'done' ? (
+          <PublishReceipt summary={state.summary} headingRef={resultHeadingRef} />
+        ) : (
+          <PublishIdle />
+        )}
+      </div>
     </div>
   );
 }

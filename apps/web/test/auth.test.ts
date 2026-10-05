@@ -6,7 +6,10 @@ import {
   hashesEqual,
   hashToken,
   isWellFormedPublisherToken,
+  readSession,
   SESSION_TTL_MS,
+  sessionCookieName,
+  sessionCookieOptions,
   verifyAdminToken,
   verifySession,
   verifyToken,
@@ -90,14 +93,55 @@ describe('admin token and sessions', () => {
     expect(verifySession(undefined, now)).toBe(false);
   });
 
-  it('invalidates sessions when the signing secret changes', () => {
+  it('invalidates sessions when the admin token changes', () => {
     process.env.AGENTHUB_ADMIN_TOKEN = ADMIN;
     const session = createSession();
     process.env.AGENTHUB_ADMIN_TOKEN = 'z'.repeat(40);
     expect(verifySession(session?.value)).toBe(false);
+  });
+
+  it('a pinned session secret does not keep sessions alive after rotation or disabling', () => {
     process.env.AGENTHUB_SESSION_SECRET = 's'.repeat(32);
+    process.env.AGENTHUB_ADMIN_TOKEN = ADMIN;
     const pinned = createSession();
+    expect(verifySession(pinned?.value)).toBe(true);
+    // Rotated after a leak: the attacker's session must die.
+    process.env.AGENTHUB_ADMIN_TOKEN = 'z'.repeat(40);
+    expect(verifySession(pinned?.value)).toBe(false);
+    // Admin disabled: no session verifies.
+    delete process.env.AGENTHUB_ADMIN_TOKEN;
+    expect(verifySession(pinned?.value)).toBe(false);
+    // Same token and secret again (e.g. a restart): still valid.
     process.env.AGENTHUB_ADMIN_TOKEN = ADMIN;
     expect(verifySession(pinned?.value)).toBe(true);
+    // A different secret with the same token invalidates too.
+    process.env.AGENTHUB_SESSION_SECRET = 't'.repeat(32);
+    expect(verifySession(pinned?.value)).toBe(false);
+  });
+
+  it('exposes the nonce and expiry of a valid session', () => {
+    process.env.AGENTHUB_ADMIN_TOKEN = ADMIN;
+    const now = 5_000_000;
+    const session = createSession(now);
+    const read = readSession(session?.value, now + 1);
+    expect(read?.nonce).toBe(session?.value.split('.')[2]);
+    expect(read?.expires.getTime()).toBe(now + SESSION_TTL_MS);
+    expect(readSession('v1.1.2.3', now)).toBeNull();
+  });
+
+  it('clears the session cookie with the attributes it was set with', () => {
+    const previous = process.env.NODE_ENV;
+    (process.env as Record<string, string>).NODE_ENV = 'production';
+    try {
+      expect(sessionCookieName()).toBe('__Host-agenthub_admin');
+      expect(sessionCookieOptions(new Date(0))).toMatchObject({
+        secure: true,
+        path: '/',
+        httpOnly: true,
+        sameSite: 'strict',
+      });
+    } finally {
+      (process.env as Record<string, string | undefined>).NODE_ENV = previous;
+    }
   });
 });

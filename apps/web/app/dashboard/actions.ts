@@ -1,6 +1,6 @@
 'use server';
 
-import { guardAction } from '../../src/lib/action-guard';
+import { guardOrigin, limitFailedAttempt, limitIdentity } from '../../src/lib/action-guard';
 import { getRegistry, type PublisherSkillSummary } from '../../src/lib/registry';
 
 export type DashboardState =
@@ -16,7 +16,7 @@ export async function dashboardAction(
   _prev: DashboardState,
   formData: FormData,
 ): Promise<DashboardState> {
-  const blocked = await guardAction('publish');
+  const blocked = await guardOrigin();
   if (blocked) return { status: 'error', message: blocked };
   const token = formData.get('token');
   if (typeof token !== 'string' || token.trim() === '') {
@@ -24,7 +24,12 @@ export async function dashboardAction(
   }
   const registry = await getRegistry();
   const publisher = await registry.authenticatePublisher(token.trim());
-  if (!publisher) return { status: 'error', message: 'That publisher token is not valid.' };
+  if (!publisher) {
+    const limited = await limitFailedAttempt();
+    return { status: 'error', message: limited ?? 'That publisher token is not valid.' };
+  }
+  const limited = limitIdentity('read', `publisher:${publisher.id}`);
+  if (limited) return { status: 'error', message: limited };
   return {
     status: 'ready',
     publisher: { name: publisher.displayName, verified: publisher.verifiedAt !== null },

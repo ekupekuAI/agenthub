@@ -140,7 +140,7 @@ export function SafeMarkdown({
 }) {
   const blocks = parseBlocks(source);
   return (
-    <div className="prose-doc">
+    <div className="prose-ledger" data-density="compact">
       {blocks.map((block, index) => {
         const key = `${block.kind}-${index}`;
         switch (block.kind) {
@@ -171,7 +171,7 @@ export function SafeMarkdown({
               </pre>
             );
           case 'rule':
-            return <hr key={key} className="my-6 border-line" />;
+            return <hr key={key} />;
           default:
             return <p key={key}>{inline(block.text)}</p>;
         }

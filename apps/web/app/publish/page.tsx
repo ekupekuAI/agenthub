@@ -1,5 +1,7 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
+import { PublishSteps } from '../../src/components/publish/PublishSteps';
+import { Callout, Container, PageHeader } from '../../src/components/ui';
 import { PublishForm } from './PublishForm';
 
 export const metadata: Metadata = {
@@ -9,36 +11,59 @@ export const metadata: Metadata = {
 
 export default function PublishPage() {
   return (
-    <div className="mx-auto max-w-6xl px-4 py-10 sm:px-6">
-      <h1 className="text-3xl font-bold tracking-tight">Publish a skill</h1>
-      <div className="mt-3 max-w-3xl space-y-2 text-muted">
-        <p>
-          Upload a package built with <code>agenthub pack</code>. The registry recomputes both
-          digests, stores the archive under its SHA-256, and scans every file before the version
-          becomes installable.
-        </p>
-        <ul className="list-disc space-y-1 pl-5 text-sm">
-          <li>
-            <strong className="text-ink">Versions are immutable.</strong> You cannot replace{' '}
-            <code>1.2.0</code>; publish <code>1.2.1</code> instead.
-          </li>
-          <li>
-            <strong className="text-ink">Every upload is scanned.</strong> A BLOCK finding
-            quarantines the version until a moderator reviews it.
-          </li>
-          <li>
-            <strong className="text-ink">Names belong to their first publisher.</strong> Read the{' '}
-            <Link href="/guidelines#publishing-rules">publishing rules</Link> first.
-          </li>
-        </ul>
-        <p className="text-sm">
-          Prefer the command line? <code>POST /api/v1/publish</code> with{' '}
-          <code>Authorization: Bearer &lt;token&gt;</code> and the package bytes.
-        </p>
-      </div>
-      <div className="mt-8">
-        <PublishForm />
-      </div>
-    </div>
+    <>
+      <PageHeader
+        eyebrow="Publish"
+        title={
+          <>
+            Ship a <em>scanned</em> version
+          </>
+        }
+        lede="Upload a package built with agenthub pack. The registry recomputes both digests, stores the archive under its SHA-256 and scans every file before the version can be installed."
+      />
+
+      <Container className="py-10 lg:py-16">
+        <div className="grid grid-cols-1 gap-12 lg:grid-cols-[minmax(0,1fr)_minmax(0,34rem)] lg:gap-16">
+          <div className="flex min-w-0 flex-col gap-10">
+            <section aria-labelledby="how-publishing-works">
+              <p className="eyebrow">How it works</p>
+              <h2
+                id="how-publishing-works"
+                className="mt-2 mb-8 font-display text-[1.75rem] text-text leading-[1.15]"
+              >
+                From folder to receipt
+              </h2>
+              <PublishSteps />
+            </section>
+
+            <Callout tone="note" title="The rules">
+              <ul className="m-0 mt-1 grid list-none gap-2.5 p-0">
+                <li>
+                  <strong>Versions are immutable.</strong> You cannot replace <code>1.2.0</code>.
+                  Publish <code>1.2.1</code> instead.
+                </li>
+                <li>
+                  <strong>Every upload is scanned.</strong> A BLOCK finding quarantines the version
+                  until a moderator reviews it.
+                </li>
+                <li>
+                  <strong>Names belong to their first publisher.</strong> Read the{' '}
+                  <Link href="/guidelines#publishing-rules">publishing rules</Link> first.
+                </li>
+              </ul>
+            </Callout>
+
+            <p className="text-muted text-small">
+              Prefer the command line? Send <code>POST /api/v1/publish</code> with{' '}
+              <code>Authorization: Bearer &lt;token&gt;</code> and the package bytes.
+            </p>
+          </div>
+
+          <div className="min-w-0">
+            <PublishForm />
+          </div>
+        </div>
+      </Container>
+    </>
   );
 }

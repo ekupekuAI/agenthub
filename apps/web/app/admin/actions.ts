@@ -3,11 +3,17 @@
 import { cookies } from 'next/headers';
 import { redirect } from 'next/navigation';
 import { z } from 'zod';
-import { guardAction, hasAdminSession } from '../../src/lib/action-guard';
+import {
+  currentAdminSession,
+  guardOrigin,
+  limitFailedAttempt,
+  limitIdentity,
+} from '../../src/lib/action-guard';
 import {
   adminEnabled,
   createSession,
   sessionCookieName,
+  sessionCookieOptions,
   verifyAdminToken,
 } from '../../src/lib/auth';
 import { isApiError } from '../../src/lib/errors';
@@ -23,28 +29,44 @@ export type LoginState = { error?: string };
 
 export async function loginAction(_prev: LoginState, formData: FormData): Promise<LoginState> {
   if (!adminEnabled()) return { error: 'Admin is disabled on this registry.' };
-  const blocked = await guardAction('admin');
+  const blocked = await guardOrigin();
   if (blocked) return { error: blocked };
   const token = formData.get('token');
   if (typeof token !== 'string' || !verifyAdminToken(token)) {
-    return { error: 'That admin token is not valid.' };
+    // Only failed attempts are limited, so nobody can lock the administrator out.
+    const limited = await limitFailedAttempt();
+    return { error: limited ?? 'That admin token is not valid.' };
   }
   const session = createSession();
   if (!session) return { error: 'Admin is disabled on this registry.' };
-  (await cookies()).set(sessionCookieName(), session.value, {
-    httpOnly: true,
-    sameSite: 'strict',
-    secure: process.env.NODE_ENV === 'production',
-    path: '/',
-    expires: session.expires,
-  });
+  (await cookies()).set(sessionCookieName(), session.value, sessionCookieOptions(session.expires));
   redirect('/admin');
 }
 
 export async function logoutAction(): Promise<void> {
-  const blocked = await guardAction('admin');
-  if (!blocked) (await cookies()).delete(sessionCookieName());
+  const blocked = await guardOrigin();
+  if (!blocked) {
+    // Sign the session out on the server too, so a copied cookie stops working.
+    const session = await currentAdminSession();
+    if (session) await (await getRegistry()).revokeAdminSession(session.nonce, session.expires);
+    // Clear with the attributes the cookie was set with: browsers ignore a deletion of a
+    // __Host- cookie that lacks Secure and Path=/.
+    (await cookies()).set(sessionCookieName(), '', {
+      ...sessionCookieOptions(new Date(0)),
+      maxAge: 0,
+    });
+  }
   redirect('/admin');
+}
+
+/** Admin session plus the admin rate limit; an error message, or null when allowed. */
+async function requireAdmin(): Promise<string | null> {
+  const blocked = await guardOrigin();
+  if (blocked) return blocked;
+  if (!adminEnabled()) return 'Admin is disabled on this registry.';
+  const session = await currentAdminSession();
+  if (!session) return (await limitFailedAttempt()) ?? 'Your session has expired.';
+  return limitIdentity('admin', 'admin-session');
 }
 
 const targetSchema = z.object({ slug: slugSchema, version: versionSchema });
@@ -52,8 +74,7 @@ const targetSchema = z.object({ slug: slugSchema, version: versionSchema });
 type Op = 'approve' | 'quarantine' | 'revoke' | 'rescan';
 
 async function moderate(op: Op, formData: FormData): Promise<never> {
-  const blocked = await guardAction('admin');
-  if (blocked || !(await hasAdminSession())) redirect('/admin?error=unauthorized');
+  if (await requireAdmin()) redirect('/admin?error=unauthorized');
 
   const target = targetSchema.safeParse({
     slug: formData.get('slug'),
@@ -111,9 +132,8 @@ export async function createPublisherAction(
   _prev: CreatePublisherState,
   formData: FormData,
 ): Promise<CreatePublisherState> {
-  const blocked = await guardAction('admin');
+  const blocked = await requireAdmin();
   if (blocked) return { status: 'error', message: blocked };
-  if (!(await hasAdminSession())) return { status: 'error', message: 'Your session has expired.' };
   const parsed = createPublisherSchema.safeParse({
     displayName: formData.get('displayName'),
     verified: formData.get('verified') === 'on',

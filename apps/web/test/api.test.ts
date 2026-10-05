@@ -6,6 +6,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { SHARED_RATE_LIMITS } from '../src/lib/rate-limit';
 import { DOWNLOAD_EXEC_SCRIPT, packTestSkill } from './helpers';
 
 const ADMIN = 'a'.repeat(48);
@@ -264,5 +265,61 @@ describe('/api/v1', () => {
     );
     expect(dl.status).toBe(403);
     expect((await dl.json()).error.code).toBe('FORBIDDEN');
+  });
+
+  it('pages the version list and omits findings from it', async () => {
+    const res = await routes.versions.GET(
+      new Request(`${BASE}/api/v1/skills/api-skill/versions?limit=1&offset=1`, { headers: IP }),
+      ctx({ slug: 'api-skill' }),
+    );
+    const { data } = await res.json();
+    expect(data.versions.map((v: { version: string }) => v.version)).toEqual(['1.0.0']);
+    expect(data.versions[0].scan.findings).toEqual([]);
+    const bad = await routes.versions.GET(
+      new Request(`${BASE}/api/v1/skills/api-skill/versions?limit=0`, { headers: IP }),
+      ctx({ slug: 'api-skill' }),
+    );
+    expect(bad.status).toBe(400);
+  });
+
+  it('limits failed publisher tokens without locking out a valid token', async () => {
+    const bytes = await packTestSkill(root, 'api-limited', { version: '1.0.0' });
+    const statuses: number[] = [];
+    for (let i = 0; i <= SHARED_RATE_LIMITS.auth.limit; i++) {
+      statuses.push(
+        (await routes.publish.POST(publishRequest(bytes, `ahp_${'y'.repeat(43)}`), ctx({}))).status,
+      );
+    }
+    expect(statuses).toContain(401);
+    expect(statuses.at(-1)).toBe(429);
+    // Requests in the publisher's name with a forged X-Forwarded-For cannot block it.
+    const ok = await routes.publish.POST(publishRequest(bytes, token), ctx({}));
+    expect(ok.status).toBe(201);
+  });
+
+  it('admins can rotate a token and suspend a publisher', async () => {
+    const manage = await import('../app/api/v1/admin/publishers/manage/route');
+    const { getRegistry } = await import('../src/lib/registry');
+    const registry = await getRegistry();
+    const victim = await registry.createPublisher('rotating-pub', false);
+    const call = (body: unknown) =>
+      manage.POST(
+        new Request(`${BASE}/api/v1/admin/publishers/manage`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', authorization: `Bearer ${ADMIN}` },
+          body: JSON.stringify(body),
+        }),
+        ctx({}),
+      );
+    const rotated = await call({ displayName: 'rotating-pub', action: 'rotate-token' });
+    expect(rotated.status).toBe(200);
+    const { data } = await rotated.json();
+    expect(data.token).toMatch(/^ahp_/);
+    expect(await registry.authenticatePublisher(victim.token)).toBeNull();
+    expect(await registry.authenticatePublisher(data.token)).not.toBeNull();
+
+    expect((await call({ displayName: 'rotating-pub', action: 'disable' })).status).toBe(200);
+    expect(await registry.authenticatePublisher(data.token)).toBeNull();
+    expect((await call({ displayName: 'nobody-here', action: 'disable' })).status).toBe(404);
   });
 });

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdtemp, readdir, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -42,6 +42,40 @@ describe('LocalFsStore', () => {
     await store.put(key, data);
     await expect(store.put(key, bytes('tampered'))).rejects.toThrow(/different content/);
     expect(Buffer.from((await store.get(key)) ?? []).toString()).toBe('original');
+  });
+
+  it('replaces a truncated leftover at the key instead of failing forever', async () => {
+    const data = bytes('complete artifact contents');
+    const key = keyOf(data);
+    const file = path.join(root, 'artifacts', ...key.split('/'));
+    await mkdir(path.dirname(file), { recursive: true });
+    await writeFile(file, data.slice(0, 5)); // an interrupted earlier write
+    await store.put(key, data);
+    expect(Buffer.from((await store.get(key)) ?? []).toString()).toBe('complete artifact contents');
+  });
+
+  it('accepts concurrent writes of the same bytes and leaves no temp files', async () => {
+    const data = new Uint8Array(4 * 1024 * 1024).fill(7);
+    const key = keyOf(data);
+    await Promise.all([store.put(key, data), store.put(key, data), store.put(key, data)]);
+    expect(Buffer.from((await store.get(key)) ?? []).equals(Buffer.from(data))).toBe(true);
+    const dir = path.join(root, 'artifacts', 'sha256');
+    expect((await readdir(dir)).some((f) => f.startsWith('.tmp-'))).toBe(false);
+  });
+
+  it('refuses bytes that do not match their content address', async () => {
+    const key = keyOf(bytes('one'));
+    await expect(store.put(key, bytes('two'))).rejects.toThrow(/do not match/);
+    expect(await store.exists(key)).toBe(false);
+  });
+
+  it('deletes artifacts (missing keys are ignored)', async () => {
+    const data = bytes('to be removed');
+    const key = keyOf(data);
+    await store.put(key, data);
+    await store.delete(key);
+    expect(await store.exists(key)).toBe(false);
+    await expect(store.delete(key)).resolves.toBeUndefined();
   });
 
   it('returns null for a missing artifact', async () => {

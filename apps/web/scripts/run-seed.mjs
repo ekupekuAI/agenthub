@@ -23,5 +23,8 @@ await build({
   logLevel: 'warning',
 });
 
-const result = spawnSync(process.execPath, [outfile], { stdio: 'inherit', env: process.env });
+const result = spawnSync(process.execPath, [outfile, ...process.argv.slice(2)], {
+  stdio: 'inherit',
+  env: process.env,
+});
 process.exit(result.status ?? 1);

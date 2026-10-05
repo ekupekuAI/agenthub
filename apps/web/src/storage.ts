@@ -1,17 +1,22 @@
-import { createHash } from 'node:crypto';
-import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { createHash, randomBytes } from 'node:crypto';
+import { link, mkdir, open, readFile, rename, stat, unlink } from 'node:fs/promises';
 import path from 'node:path';
 
 /** Immutable, content-addressed artifact storage. */
 export interface ArtifactStore {
-  /** Writes once. Identical bytes under an existing key succeed; different bytes throw. */
+  /**
+   * Writes once, atomically. Identical bytes under an existing key succeed; different bytes
+   * throw. Keys are content addresses, so the bytes must hash to the key.
+   */
   put(key: string, bytes: Uint8Array): Promise<void>;
   /** Returns null when the key does not exist. */
   get(key: string): Promise<Uint8Array | null>;
   exists(key: string): Promise<boolean>;
+  /** Removes an artifact (used to roll back a failed publish). Missing keys are ignored. */
+  delete(key: string): Promise<void>;
 }
 
-const KEY_RE = /^sha256\/[a-f0-9]{64}\.skillpkg$/;
+const KEY_RE = /^sha256\/([a-f0-9]{64})\.skillpkg$/;
 
 export class StorageError extends Error {
   constructor(message: string) {
@@ -34,9 +39,16 @@ export function storageKeyFor(archiveDigest: string): string {
   return key;
 }
 
-function sha256(bytes: Uint8Array): Buffer {
-  return createHash('sha256').update(bytes).digest();
+function sha256Hex(bytes: Uint8Array): string {
+  return createHash('sha256').update(bytes).digest('hex');
 }
+
+function errno(error: unknown): string | undefined {
+  return (error as NodeJS.ErrnoException | null)?.code;
+}
+
+/** Filesystems without hard links report one of these from link(). */
+const NO_HARD_LINKS = new Set(['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'ENOSYS', 'EXDEV']);
 
 export class LocalFsStore implements ArtifactStore {
   private readonly root: string;
@@ -53,17 +65,57 @@ export class LocalFsStore implements ArtifactStore {
     return full;
   }
 
+  /** True when the file exists and hashes to `hex`. */
+  private async holds(file: string, hex: string): Promise<boolean> {
+    try {
+      return sha256Hex(await readFile(file)) === hex;
+    } catch (error) {
+      if (errno(error) === 'ENOENT') return false;
+      throw error;
+    }
+  }
+
+  /**
+   * Write to a unique temp file in the same directory, fsync it, then link it into place
+   * (link never overwrites, so concurrent writers of the same bytes cannot see each other's
+   * partial files). A file already at the key that does not hash to it is a leftover from an
+   * interrupted write and is replaced. Readers only ever see complete artifacts.
+   */
   async put(key: string, bytes: Uint8Array): Promise<void> {
     const file = this.resolve(key);
-    await mkdir(path.dirname(file), { recursive: true });
-    try {
-      await writeFile(file, bytes, { flag: 'wx' });
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-      const existing = await readFile(file);
-      if (!sha256(existing).equals(sha256(bytes))) {
+    const hex = (KEY_RE.exec(key) as RegExpExecArray)[1] as string;
+    if (sha256Hex(bytes) !== hex) {
+      // A content address must match its content; anything else is a caller bug or tampering.
+      if (await this.holds(file, hex)) {
         throw new StorageError(`Artifact ${key} already exists with different content`);
       }
+      throw new StorageError(`Artifact bytes do not match the key ${key}`);
+    }
+    const dir = path.dirname(file);
+    await mkdir(dir, { recursive: true });
+    if (await this.holds(file, hex)) return;
+
+    const temp = path.join(dir, `.tmp-${process.pid}-${randomBytes(8).toString('hex')}`);
+    try {
+      const handle = await open(temp, 'wx', 0o644);
+      try {
+        await handle.writeFile(bytes);
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
+      try {
+        await link(temp, file);
+      } catch (error) {
+        const code = errno(error);
+        if (code !== 'EEXIST' && !NO_HARD_LINKS.has(code ?? '')) throw error;
+        // Another writer finished first, a corrupt leftover sits at the key, or the
+        // filesystem has no hard links. Replacing with verified identical bytes is safe.
+        if (await this.holds(file, hex)) return;
+        await rename(temp, file);
+      }
+    } finally {
+      await unlink(temp).catch(() => {});
     }
   }
 
@@ -72,7 +124,7 @@ export class LocalFsStore implements ArtifactStore {
     try {
       return new Uint8Array(await readFile(file));
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+      if (errno(error) === 'ENOENT') return null;
       throw error;
     }
   }
@@ -83,6 +135,15 @@ export class LocalFsStore implements ArtifactStore {
       return (await stat(file)).isFile();
     } catch {
       return false;
+    }
+  }
+
+  async delete(key: string): Promise<void> {
+    const file = this.resolve(key);
+    try {
+      await unlink(file);
+    } catch (error) {
+      if (errno(error) !== 'ENOENT') throw error;
     }
   }
 }

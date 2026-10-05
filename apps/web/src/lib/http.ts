@@ -1,6 +1,6 @@
 import { ZodError } from 'zod';
 import { ApiError, isApiError } from './errors';
-import { checkRateLimit, clientKeyFromHeaders, type RateGroup } from './rate-limit';
+import { checkClientLimit, enforceDecision } from './rate-limit';
 
 const JSON_HEADERS = {
   'Content-Type': 'application/json; charset=utf-8',
@@ -66,13 +66,9 @@ export function isSameOriginStrict(headers: Headers): boolean {
   return !isCrossOrigin(headers);
 }
 
-export function enforceRateLimit(group: RateGroup, headers: Headers): void {
-  const decision = checkRateLimit(group, clientKeyFromHeaders(headers));
-  if (!decision.ok) {
-    throw new ApiError('RATE_LIMITED', 'Too many requests. Try again later.', {
-      headers: { 'Retry-After': String(decision.retryAfterSeconds) },
-    });
-  }
+/** Charge one anonymous request of the group; throws RATE_LIMITED when over the limit. */
+export function enforceClientRateLimit(group: 'read' | 'page', headers: Headers): void {
+  enforceDecision(checkClientLimit(group, headers));
 }
 
 type RouteContext<P> = { params: Promise<P> };
@@ -80,14 +76,20 @@ type RouteContext<P> = { params: Promise<P> };
 /**
  * Wrap a route handler: rate limit, reject cross-origin browser POSTs, map errors to JSON.
  * API callers authenticate with bearer tokens (no cookies), so an absent Origin is allowed.
+ *
+ * 'read' routes are anonymous and charged per client (see rate-limit.ts) before the handler
+ * runs. 'publish' and 'admin' routes are charged per credential by the handler itself
+ * (requireAdminBearer, requirePublisherBearer) once the credential verified; failed
+ * credentials are charged to the client's 'auth' bucket. So nobody can lock a publisher or the
+ * administrator out by sending requests in their name.
  */
 export function apiRoute<P = Record<string, never>>(
-  group: RateGroup,
+  group: 'read' | 'publish' | 'admin',
   handler: (request: Request, params: P) => Promise<Response>,
 ) {
   return async (request: Request, context: RouteContext<P>): Promise<Response> => {
     try {
-      enforceRateLimit(group, request.headers);
+      if (group === 'read') enforceClientRateLimit('read', request.headers);
       if (request.method !== 'GET' && request.method !== 'HEAD' && isCrossOrigin(request.headers)) {
         throw new ApiError('FORBIDDEN', 'Cross-origin requests are not allowed.');
       }

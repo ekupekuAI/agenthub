@@ -2,6 +2,11 @@ import { MAX_UPLOAD_BYTES } from '../../../../src/config';
 import { bearerToken } from '../../../../src/lib/auth';
 import { ApiError } from '../../../../src/lib/errors';
 import { apiRoute, jsonOk, readBody } from '../../../../src/lib/http';
+import {
+  checkIdentityLimit,
+  enforceAuthFailureLimit,
+  enforceDecision,
+} from '../../../../src/lib/rate-limit';
 import { getRegistry } from '../../../../src/lib/registry';
 import { releaseNotesSchema, versionSchema } from '../../../../src/lib/validation';
 
@@ -23,10 +28,15 @@ export const POST = apiRoute('publish', async (request) => {
     bearerToken(request.headers.get('authorization')),
   );
   if (!publisher) {
+    enforceAuthFailureLimit(request.headers);
     throw new ApiError('UNAUTHORIZED', 'A valid publisher token is required.', {
       headers: { 'WWW-Authenticate': 'Bearer' },
     });
   }
+
+  // Charged per publisher once the token verified (before the body is read), so nobody can
+  // exhaust a publisher's quota without holding its token.
+  enforceDecision(checkIdentityLimit('publish', `publisher:${publisher.id}`));
 
   const type = (request.headers.get('content-type') ?? '').toLowerCase();
   let bytes: Uint8Array;

@@ -1,247 +1,979 @@
 @import "tailwindcss";
 
-:root {
-  --canvas: #ffffff;
-  --surface: #f6f8fa;
-  --raised: #eef2f6;
-  --line: #d3dae2;
-  --ink: #0f172a;
-  --muted: #4a5668;
-  --accent: #0b5cad;
-  --accent-strong: #084a8c;
-  --accent-ink: #ffffff;
-  --code-bg: #f1f4f8;
+/*
+ * agenthub design tokens: "the ledger" (docs/specs/2026-10-04-web-design.md §2–§3).
+ *
+ * Dark is the default. Light applies when <html data-theme="light"> is set, or when the
+ * visitor's system prefers light and no choice has been stored yet. `.theme-dark` pins a
+ * subtree to the dark palette (the terminal stays dark on the light theme).
+ *
+ * Contrast (WCAG 2.x, computed): every text token is at least 4.5:1 on bg and on all three
+ * surfaces in both themes; status colors are at least 4.5:1 on their own 14% tint.
+ * Three values differ from the spec table to reach that: dark --text-subtle (#7C8591 →
+ * #808995), light --text-subtle (#667080 → #5F6978) and light --block (#B4233A → #AD2037).
+ * --border-field is at least 3:1 on every surface for form-control outlines.
+ */
 
-  --ok-fg: #14532d;
-  --ok-bg: #dcfce7;
-  --ok-line: #86efac;
-  --warn-fg: #7c2d12;
-  --warn-bg: #fef3c7;
-  --warn-line: #fcd34d;
-  --bad-fg: #7f1d1d;
-  --bad-bg: #fee2e2;
-  --bad-line: #fca5a5;
-  --info-fg: #1e3a8a;
-  --info-bg: #dbeafe;
-  --info-line: #93c5fd;
+:root,
+html[data-theme="dark"],
+.theme-dark {
+  --bg: #0b0c0e;
+  --surface-1: #111316;
+  --surface-2: #16191d;
+  --surface-3: #1c2025;
+  --border: #262b31;
+  --border-strong: #353b43;
+  --border-field: #646e7a;
+  --text: #eceef0;
+  --text-muted: #a3abb5;
+  --text-subtle: #808995;
+  --signal: #c5f04a;
+  --signal-hover: #d4f673;
+  --on-signal: #0b0c0e;
+  --signal-ink: #c5f04a;
+  --info: #7cc4fa;
+  --warn: #f5b544;
+  --block: #ff7a85;
+  --ring: #c5f04a;
+  --scrim: rgb(4 5 6 / 0.72);
+  --cta-bg: #16191d;
+  --cta-text: #eceef0;
+  --elev-panel: inset 0 1px 0 0 rgb(255 255 255 / 0.04), 0 12px 40px -12px rgb(0 0 0 / 0.6);
+  --elev-pop: inset 0 1px 0 0 rgb(255 255 255 / 0.05), 0 24px 64px -16px rgb(0 0 0 / 0.75);
+  color-scheme: dark;
+}
 
+html[data-theme="light"] {
+  --bg: #fafaf7;
+  --surface-1: #ffffff;
+  --surface-2: #f3f3ee;
+  --surface-3: #eaeae3;
+  --border: #e3e3dc;
+  --border-strong: #cfcfc6;
+  --border-field: #84847b;
+  --text: #14161a;
+  --text-muted: #4a515b;
+  --text-subtle: #5f6978;
+  --signal: #c5f04a;
+  --signal-hover: #b8e53c;
+  --on-signal: #14161a;
+  --signal-ink: #3f6212;
+  --info: #075985;
+  --warn: #92400e;
+  --block: #ad2037;
+  --ring: #3f6212;
+  --scrim: rgb(20 22 26 / 0.45);
+  --cta-bg: #14161a;
+  --cta-text: #fafaf7;
+  --elev-panel: inset 0 1px 0 0 rgb(255 255 255 / 0.7), 0 12px 32px -16px rgb(20 22 26 / 0.18);
+  --elev-pop: inset 0 1px 0 0 rgb(255 255 255 / 0.7), 0 24px 56px -20px rgb(20 22 26 / 0.3);
   color-scheme: light;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --canvas: #0b0f14;
-    --surface: #111821;
-    --raised: #18212c;
-    --line: #2b3644;
-    --ink: #e6edf3;
-    --muted: #9fadbb;
-    --accent: #6cb6ff;
-    --accent-strong: #9ccdff;
-    --accent-ink: #0b0f14;
-    --code-bg: #151d27;
-
-    --ok-fg: #a7f3c0;
-    --ok-bg: #062a14;
-    --ok-line: #166534;
-    --warn-fg: #fde68a;
-    --warn-bg: #2d1d04;
-    --warn-line: #92400e;
-    --bad-fg: #fecaca;
-    --bad-bg: #3a0d0d;
-    --bad-line: #991b1b;
-    --info-fg: #bfdbfe;
-    --info-bg: #0c1f3d;
-    --info-line: #1e40af;
-
-    color-scheme: dark;
+@media (prefers-color-scheme: light) {
+  html:not([data-theme]) {
+    --bg: #fafaf7;
+    --surface-1: #ffffff;
+    --surface-2: #f3f3ee;
+    --surface-3: #eaeae3;
+    --border: #e3e3dc;
+    --border-strong: #cfcfc6;
+    --border-field: #84847b;
+    --text: #14161a;
+    --text-muted: #4a515b;
+    --text-subtle: #5f6978;
+    --signal: #c5f04a;
+    --signal-hover: #b8e53c;
+    --on-signal: #14161a;
+    --signal-ink: #3f6212;
+    --info: #075985;
+    --warn: #92400e;
+    --block: #ad2037;
+    --ring: #3f6212;
+    --scrim: rgb(20 22 26 / 0.45);
+    --cta-bg: #14161a;
+    --cta-text: #fafaf7;
+    --elev-panel: inset 0 1px 0 0 rgb(255 255 255 / 0.7), 0 12px 32px -16px rgb(20 22 26 / 0.18);
+    --elev-pop: inset 0 1px 0 0 rgb(255 255 255 / 0.7), 0 24px 56px -20px rgb(20 22 26 / 0.3);
+    color-scheme: light;
   }
+}
+
+:root {
+  --header-h: 3.5rem;
 }
 
 @theme inline {
-  --color-canvas: var(--canvas);
-  --color-surface: var(--surface);
-  --color-raised: var(--raised);
-  --color-line: var(--line);
-  --color-ink: var(--ink);
-  --color-muted: var(--muted);
-  --color-accent: var(--accent);
-  --color-accent-strong: var(--accent-strong);
-  --color-accent-ink: var(--accent-ink);
-  --color-code: var(--code-bg);
-  --color-ok-fg: var(--ok-fg);
-  --color-ok-bg: var(--ok-bg);
-  --color-ok-line: var(--ok-line);
-  --color-warn-fg: var(--warn-fg);
-  --color-warn-bg: var(--warn-bg);
-  --color-warn-line: var(--warn-line);
-  --color-bad-fg: var(--bad-fg);
-  --color-bad-bg: var(--bad-bg);
-  --color-bad-line: var(--bad-line);
-  --color-info-fg: var(--info-fg);
-  --color-info-bg: var(--info-bg);
-  --color-info-line: var(--info-line);
+  /* Only the ledger palette exists: the default Tailwind colors are removed on purpose. */
+  --color-*: initial;
+  --color-white: #fff;
+  --color-black: #000;
+
+  --color-bg: var(--bg);
+  --color-surface-1: var(--surface-1);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-border-field: var(--border-field);
+  --color-text: var(--text);
+  --color-muted: var(--text-muted);
+  --color-subtle: var(--text-subtle);
+  --color-signal: var(--signal);
+  --color-signal-hover: var(--signal-hover);
+  --color-on-signal: var(--on-signal);
+  --color-signal-ink: var(--signal-ink);
+  --color-info: var(--info);
+  --color-warn: var(--warn);
+  --color-block: var(--block);
+  --color-ring: var(--ring);
+  --color-scrim: var(--scrim);
+  --color-cta: var(--cta-bg);
+  --color-on-cta: var(--cta-text);
+
+  /* Status tints: 14% for backgrounds, 40% for borders. */
+  --color-signal-tint: color-mix(in oklab, var(--signal-ink) 14%, transparent);
+  --color-signal-line: color-mix(in oklab, var(--signal-ink) 40%, transparent);
+  --color-info-tint: color-mix(in oklab, var(--info) 14%, transparent);
+  --color-info-line: color-mix(in oklab, var(--info) 40%, transparent);
+  --color-warn-tint: color-mix(in oklab, var(--warn) 14%, transparent);
+  --color-warn-line: color-mix(in oklab, var(--warn) 40%, transparent);
+  --color-block-tint: color-mix(in oklab, var(--block) 14%, transparent);
+  --color-block-line: color-mix(in oklab, var(--block) 40%, transparent);
+
+  /*
+   * Legacy aliases for pages that predate the ledger kit. Do not use them in new code;
+   * delete this group once no page references canvas/surface/raised/line/ink/accent/ok/bad.
+   */
+  --color-canvas: var(--bg);
+  --color-surface: var(--surface-1);
+  --color-raised: var(--surface-2);
+  --color-line: var(--border);
+  --color-ink: var(--text);
+  --color-accent: var(--signal);
+  --color-accent-strong: var(--signal-hover);
+  --color-accent-ink: var(--on-signal);
+  --color-code: var(--surface-2);
+  --color-ok-fg: var(--signal-ink);
+  --color-ok-bg: color-mix(in oklab, var(--signal-ink) 14%, transparent);
+  --color-ok-line: color-mix(in oklab, var(--signal-ink) 40%, transparent);
+  --color-warn-fg: var(--warn);
+  --color-warn-bg: color-mix(in oklab, var(--warn) 14%, transparent);
+  --color-bad-fg: var(--block);
+  --color-bad-bg: color-mix(in oklab, var(--block) 14%, transparent);
+  --color-bad-line: color-mix(in oklab, var(--block) 40%, transparent);
+  --color-info-fg: var(--info);
+  --color-info-bg: color-mix(in oklab, var(--info) 14%, transparent);
+
+  /* Fonts are self-hosted through next/font/local in app/layout.tsx. */
+  --font-display:
+    var(--font-instrument-serif), "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
   --font-sans:
-    ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    var(--font-geist), ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
   --font-mono:
-    ui-monospace, "Cascadia Code", "SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace;
-}
+    var(--font-geist-mono), var(--font-geist-mono-box), ui-monospace, "Cascadia Code",
+    "SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace;
 
-html {
-  background: var(--canvas);
-  color: var(--ink);
-  -webkit-text-size-adjust: 100%;
-}
+  /* Type scale (§3). `text-display-1` sets size, line height and tracking together. */
+  --text-display-1: clamp(2.6rem, 6vw, 4.6rem);
+  --text-display-1--line-height: 1.02;
+  --text-display-1--letter-spacing: -0.02em;
+  --text-display-2: clamp(1.9rem, 3.4vw, 2.6rem);
+  --text-display-2--line-height: 1.1;
+  --text-display-2--letter-spacing: -0.015em;
+  --text-h3: 1.25rem;
+  --text-h3--line-height: 1.75rem;
+  --text-h3--font-weight: 600;
+  --text-body: 1rem;
+  --text-body--line-height: 1.625rem;
+  --text-small: 0.875rem;
+  --text-small--line-height: 1.375rem;
+  --text-mono: 0.84375rem;
+  --text-mono--line-height: 1.375rem;
+  --text-eyebrow: 0.75rem;
+  --text-eyebrow--line-height: 1rem;
+  --text-eyebrow--letter-spacing: 0.12em;
 
-body {
-  background: var(--canvas);
-  color: var(--ink);
-  font-family: var(--font-sans);
-  line-height: 1.55;
-  text-rendering: optimizeLegibility;
-}
+  /* Radius: 6 chips, 10 inputs and buttons, 14 cards, 20 terminal and receipt. */
+  --radius-*: initial;
+  --radius-xs: 2px;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 10px;
+  --radius-xl: 14px;
+  --radius-2xl: 20px;
+  --radius-chip: 6px;
+  --radius-control: 10px;
+  --radius-card: 14px;
+  --radius-panel: 20px;
 
-@media (prefers-reduced-motion: no-preference) {
-  html {
-    scroll-behavior: smooth;
+  --shadow-panel: var(--elev-panel);
+  --shadow-pop: var(--elev-pop);
+
+  /* Widths: 1120px content, 720px prose. */
+  --container-page: 70rem;
+  --container-reading: 45rem;
+  --container-wide: 80rem;
+
+  --ease-out-quart: cubic-bezier(0.25, 1, 0.5, 1);
+
+  --animate-cursor: terminal-cursor 1.1s steps(1, end) infinite;
+  --animate-skeleton: skeleton-pulse 1.6s ease-in-out infinite;
+  --animate-spinner: spinner-rotate 0.8s linear infinite;
+
+  @keyframes terminal-cursor {
+    0%,
+    55% {
+      opacity: 1;
+    }
+    56%,
+    100% {
+      opacity: 0;
+    }
+  }
+
+  @keyframes spinner-rotate {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
+  @keyframes skeleton-pulse {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.55;
+    }
   }
 }
 
-/* Unlayered rules beat Tailwind utility layers, so no !important is needed. */
+/* ------------------------------------------------------------------------------------ */
+/* Base                                                                                 */
+/* ------------------------------------------------------------------------------------ */
+
+@layer base {
+  html {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-sans);
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+    scroll-padding-top: calc(var(--header-h) + 1.5rem);
+    scrollbar-color: var(--border-strong) transparent;
+    scrollbar-width: thin;
+  }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-sans);
+    font-size: 1rem;
+    line-height: 1.625;
+    font-synthesis-weight: none;
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    overflow-x: clip;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4 {
+    text-wrap: balance;
+  }
+
+  p,
+  li,
+  dd {
+    text-wrap: pretty;
+  }
+
+  a {
+    color: var(--signal-ink);
+    text-decoration-line: underline;
+    text-decoration-thickness: 1px;
+    text-underline-offset: 3px;
+    text-decoration-color: color-mix(in oklab, currentColor 45%, transparent);
+    transition:
+      color 150ms ease-out,
+      text-decoration-color 150ms ease-out;
+  }
+
+  a:hover {
+    text-decoration-color: currentColor;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+
+  /* The main landmark takes programmatic focus from the skip link; it needs no ring. */
+  main:focus {
+    outline: none;
+  }
+
+  ::selection {
+    background: color-mix(in oklab, var(--signal) 35%, transparent);
+    color: var(--text);
+  }
+
+  code,
+  kbd,
+  samp,
+  pre {
+    font-family: var(--font-mono);
+    font-size: 0.84375em;
+    font-variant-ligatures: none;
+  }
+
+  :not(pre) > code {
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.08em 0.38em;
+    overflow-wrap: anywhere;
+  }
+
+  pre {
+    background: var(--surface-1);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 0.9rem 1.1rem;
+    overflow-x: auto;
+    font-size: 0.84375rem;
+    line-height: 1.375rem;
+    tab-size: 2;
+  }
+
+  hr {
+    border-color: var(--border);
+  }
+
+  ::placeholder {
+    color: var(--text-subtle);
+    opacity: 1;
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: var(--border-strong);
+    border: 2px solid transparent;
+    border-radius: 999px;
+    background-clip: padding-box;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--text-subtle);
+    border: 2px solid transparent;
+    background-clip: padding-box;
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    html {
+      scroll-behavior: smooth;
+    }
+  }
+}
+
+/* ------------------------------------------------------------------------------------ */
+/* Utilities                                                                            */
+/* ------------------------------------------------------------------------------------ */
+
+/* Serif display headings: <h1 class="display-1">, <h2 class="display-2">. */
+@utility display-1 {
+  font-family: var(--font-display);
+  font-size: clamp(2.6rem, 6vw, 4.6rem);
+  font-weight: 400;
+  line-height: 1.02;
+  letter-spacing: -0.02em;
+  text-wrap: balance;
+}
+
+@utility display-2 {
+  font-family: var(--font-display);
+  font-size: clamp(1.9rem, 3.4vw, 2.6rem);
+  font-weight: 400;
+  line-height: 1.1;
+  letter-spacing: -0.015em;
+  text-wrap: balance;
+}
+
+/* Mono small-caps style label. */
+@utility eyebrow {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  line-height: 1rem;
+  font-weight: 500;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-subtle);
+}
+
+/*
+ * 24px dot grid at 6% opacity behind an element, faded out radially. Hero and page headers
+ * only. The element becomes a stacking context; its content stays above the texture.
+ */
+@utility dot-grid {
+  position: relative;
+  isolation: isolate;
+
+  &::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    pointer-events: none;
+    background-image: radial-gradient(
+      circle at center,
+      color-mix(in oklab, var(--text) 6%, transparent) 1.25px,
+      transparent 1.75px
+    );
+    background-size: 24px 24px;
+    background-position: center top;
+    mask-image: radial-gradient(ellipse 75% 85% at 50% 0%, #000 25%, transparent 78%);
+  }
+}
+
+/* Dotted leader between a label and its value (receipt rows). */
+@utility leader {
+  flex: 1 1 1.5rem;
+  min-width: 1.5rem;
+  height: 2px;
+  align-self: baseline;
+  transform: translateY(-0.2em);
+  background-image: radial-gradient(circle, var(--border-strong) 0.75px, transparent 1px);
+  background-size: 6px 2px;
+  background-repeat: repeat-x;
+  background-position: left center;
+}
+
+/* Extends the pointer hit area of a small control to 44px without changing its layout. */
+@utility hit-area {
+  position: relative;
+
+  &::after {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: max(100%, 2.75rem);
+    height: max(100%, 2.75rem);
+    transform: translate(-50%, -50%);
+  }
+}
+
+/* Minimum 44px hit area on touch screens and small viewports. */
+@utility tap-target {
+  @media (pointer: coarse), (max-width: 639.98px) {
+    min-height: 2.75rem;
+    min-width: 2.75rem;
+  }
+}
+
+/* ------------------------------------------------------------------------------------ */
+/* Components                                                                           */
+/* ------------------------------------------------------------------------------------ */
+
+@layer components {
+  .theme-dark {
+    color: var(--text);
+  }
+
+  /* Theme toggle icons swap in CSS so the server render never mismatches. */
+  .theme-icon-light {
+    display: none;
+  }
+
+  html[data-theme="light"] .theme-icon-dark {
+    display: none;
+  }
+
+  html[data-theme="light"] .theme-icon-light {
+    display: block;
+  }
+
+  @media (prefers-color-scheme: light) {
+    html:not([data-theme]) .theme-icon-dark {
+      display: none;
+    }
+
+    html:not([data-theme]) .theme-icon-light {
+      display: block;
+    }
+  }
+
+  /* --- Shimmer button (hero CTA): a signal-colored light travels around the border. --- */
+  .shimmer {
+    --shimmer-speed: 3.2s;
+    --shimmer-spread: 80deg;
+    --shimmer-cut: 1.5px;
+    position: relative;
+    z-index: 0;
+    isolation: isolate;
+    overflow: hidden;
+    border-radius: 999px;
+    background: var(--cta-bg);
+    color: var(--cta-text);
+  }
+
+  .shimmer-track {
+    position: absolute;
+    inset: 0;
+    z-index: -30;
+    overflow: visible;
+    container-type: size;
+    filter: blur(2px);
+  }
+
+  .shimmer-slide {
+    position: absolute;
+    inset: 0;
+    height: 100cqh;
+    aspect-ratio: 1;
+    animation: shimmer-slide var(--shimmer-speed) ease-in-out infinite alternate;
+  }
+
+  .shimmer-spark {
+    position: absolute;
+    inset: -100%;
+    background: conic-gradient(
+      from calc(270deg - (var(--shimmer-spread) * 0.5)),
+      transparent 0,
+      var(--signal) var(--shimmer-spread),
+      transparent var(--shimmer-spread)
+    );
+    animation: shimmer-spin calc(var(--shimmer-speed) * 2) infinite linear;
+  }
+
+  .shimmer-backdrop {
+    position: absolute;
+    inset: var(--shimmer-cut);
+    z-index: -20;
+    border-radius: inherit;
+    background: var(--cta-bg);
+  }
+
+  .shimmer-sheen {
+    position: absolute;
+    inset: 0;
+    z-index: -10;
+    border-radius: inherit;
+    box-shadow:
+      inset 0 0 0 1px color-mix(in oklab, var(--signal) 22%, transparent),
+      inset 0 -8px 12px -6px color-mix(in oklab, var(--signal) 18%, transparent);
+    transition: box-shadow 200ms ease-out;
+  }
+
+  .shimmer:hover .shimmer-sheen {
+    box-shadow:
+      inset 0 0 0 1px color-mix(in oklab, var(--signal) 45%, transparent),
+      inset 0 -10px 14px -6px color-mix(in oklab, var(--signal) 30%, transparent);
+  }
+
+  @keyframes shimmer-slide {
+    to {
+      transform: translate(calc(100cqw - 100%), 0);
+    }
+  }
+
+  @keyframes shimmer-spin {
+    0% {
+      transform: translateZ(0) rotate(0);
+    }
+    15%,
+    35% {
+      transform: translateZ(0) rotate(90deg);
+    }
+    65%,
+    85% {
+      transform: translateZ(0) rotate(270deg);
+    }
+    100% {
+      transform: translateZ(0) rotate(360deg);
+    }
+  }
+
+  /* --- Spotlight card: the glow only exists for hover-capable fine pointers. --- */
+  .spotlight-glow {
+    display: none;
+  }
+
+  @media (hover: hover) and (pointer: fine) {
+    .spotlight-glow {
+      display: block;
+      opacity: 0;
+      transition: opacity 240ms ease-out;
+    }
+
+    .spotlight:hover .spotlight-glow,
+    .spotlight:focus-within .spotlight-glow {
+      opacity: 1;
+    }
+  }
+
+  /* --- Trust receipt: perforated top edge cut with a repeating radial mask. --- */
+  .receipt {
+    --perf-size: 18px;
+    --perf-r: 5px;
+    position: relative;
+    isolation: isolate;
+    border-radius: 0 0 20px 20px;
+  }
+
+  .receipt::before,
+  .receipt::after {
+    content: "";
+    position: absolute;
+    pointer-events: none;
+    mask-repeat: repeat-x;
+    mask-position: 50% 0;
+    mask-size: var(--perf-size) 100%;
+  }
+
+  /* Outline layer. */
+  .receipt::before {
+    inset: 0;
+    z-index: -2;
+    border-radius: inherit;
+    background: var(--border-strong);
+    mask-image: radial-gradient(
+      circle at 50% 0,
+      transparent var(--perf-r),
+      #000 calc(var(--perf-r) + 0.5px)
+    );
+  }
+
+  /* Paper layer, inset by the 1px outline, with holes 1px larger so the outline shows. */
+  .receipt::after {
+    inset: 1px;
+    z-index: -1;
+    border-radius: 0 0 19px 19px;
+    background: var(--surface-1);
+    mask-image: radial-gradient(
+      circle at 50% -1px,
+      transparent calc(var(--perf-r) + 1px),
+      #000 calc(var(--perf-r) + 1.5px)
+    );
+  }
+
+  .receipt-rule {
+    height: 1px;
+    border: 0;
+    background-image: linear-gradient(to right, var(--border-strong) 50%, transparent 0);
+    background-size: 8px 1px;
+    background-repeat: repeat-x;
+  }
+
+  .stamp {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.3rem 0.65rem;
+    border: 1.5px solid currentColor;
+    border-radius: 6px;
+    outline: 1px solid currentColor;
+    outline-offset: 2px;
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    font-weight: 500;
+    line-height: 1rem;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    white-space: nowrap;
+    transform: rotate(-6deg);
+    transform-origin: center;
+  }
+
+  /* --- Long-form prose: guidelines and SKILL.md. `.prose-doc` is the legacy name. --- */
+  :is(.prose-ledger, .prose-doc) {
+    color: var(--text-muted);
+    font-size: 1rem;
+    line-height: 1.625rem;
+    overflow-wrap: break-word;
+  }
+
+  :is(.prose-ledger, .prose-doc) > :first-child {
+    margin-top: 0;
+  }
+
+  :is(.prose-ledger, .prose-doc) > :last-child {
+    margin-bottom: 0;
+  }
+
+  :is(.prose-ledger, .prose-doc) :is(h2, h3, h4, h5, h6) {
+    color: var(--text);
+    scroll-margin-top: calc(var(--header-h) + 1.5rem);
+  }
+
+  :is(.prose-ledger, .prose-doc) h2 {
+    font-family: var(--font-display);
+    font-size: clamp(1.9rem, 3.4vw, 2.6rem);
+    font-weight: 400;
+    line-height: 1.1;
+    letter-spacing: -0.015em;
+    margin: 3.5rem 0 1rem;
+  }
+
+  :is(.prose-ledger, .prose-doc) h3 {
+    font-size: 1.25rem;
+    font-weight: 600;
+    line-height: 1.75rem;
+    letter-spacing: -0.01em;
+    margin: 2.25rem 0 0.6rem;
+  }
+
+  :is(.prose-ledger, .prose-doc) :is(h4, h5, h6) {
+    font-size: 1rem;
+    font-weight: 600;
+    line-height: 1.5rem;
+    margin: 1.75rem 0 0.4rem;
+  }
+
+  :is(.prose-ledger, .prose-doc) p {
+    margin: 0.85rem 0;
+  }
+
+  :is(.prose-ledger, .prose-doc) strong {
+    color: var(--text);
+    font-weight: 600;
+  }
+
+  :is(.prose-ledger, .prose-doc) :is(ul, ol) {
+    margin: 0.85rem 0;
+    padding-left: 1.4rem;
+  }
+
+  :is(.prose-ledger, .prose-doc) ul {
+    list-style: disc;
+  }
+
+  :is(.prose-ledger, .prose-doc) ol {
+    list-style: decimal;
+  }
+
+  :is(.prose-ledger, .prose-doc) li {
+    margin: 0.35rem 0;
+    padding-left: 0.2rem;
+  }
+
+  :is(.prose-ledger, .prose-doc) li::marker {
+    color: var(--text-subtle);
+    font-family: var(--font-mono);
+    font-size: 0.84375em;
+  }
+
+  :is(.prose-ledger, .prose-doc) :not(pre) > code {
+    color: var(--text);
+  }
+
+  :is(.prose-ledger, .prose-doc) pre {
+    margin: 1.1rem 0;
+    color: var(--text);
+  }
+
+  :is(.prose-ledger, .prose-doc) blockquote {
+    margin: 1.1rem 0;
+    padding: 0.1rem 0 0.1rem 1rem;
+    border-left: 2px solid var(--border-strong);
+    color: var(--text-muted);
+  }
+
+  :is(.prose-ledger, .prose-doc) hr {
+    margin: 2.5rem 0;
+    border: 0;
+    border-top: 1px solid var(--border);
+  }
+
+  :is(.prose-ledger, .prose-doc) table {
+    width: 100%;
+    margin: 1.1rem 0;
+    border-collapse: collapse;
+    font-size: 0.875rem;
+    line-height: 1.375rem;
+  }
+
+  :is(.prose-ledger, .prose-doc) :is(th, td) {
+    padding: 0.6rem 0.8rem;
+    border-bottom: 1px solid var(--border);
+    text-align: left;
+    vertical-align: top;
+  }
+
+  :is(.prose-ledger, .prose-doc) th {
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    font-weight: 500;
+    line-height: 1rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-subtle);
+    border-bottom-color: var(--border-strong);
+  }
+
+  /* Compact prose for SKILL.md inside a column: smaller serif headings, tighter rhythm. */
+  .prose-ledger[data-density="compact"] h2 {
+    font-size: 1.6rem;
+    line-height: 1.15;
+    margin: 2.25rem 0 0.75rem;
+  }
+
+  .prose-ledger[data-density="compact"] h3 {
+    font-size: 1.0625rem;
+    line-height: 1.5rem;
+    margin: 1.75rem 0 0.5rem;
+  }
+
+  .prose-ledger[data-density="compact"] :is(h4, h5, h6) {
+    font-size: 0.9375rem;
+    margin: 1.5rem 0 0.35rem;
+  }
+
+  /* --- Table: stacked cards under 640px. Cells show their column label from data-label. --- */
+  .ledger-table {
+    width: 100%;
+    border-collapse: collapse;
+    text-align: left;
+    font-size: 0.875rem;
+    line-height: 1.375rem;
+  }
+
+  .ledger-table th,
+  .ledger-table td {
+    padding: 0.7rem 0.9rem;
+    vertical-align: top;
+  }
+
+  .ledger-table thead th {
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    font-weight: 500;
+    line-height: 1rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-subtle);
+    background: var(--surface-2);
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+  }
+
+  .ledger-table tbody tr {
+    border-bottom: 1px solid var(--border);
+    transition: background-color 150ms ease-out;
+  }
+
+  .ledger-table tbody tr:last-child {
+    border-bottom: 0;
+  }
+
+  .ledger-table tbody tr:hover {
+    background: color-mix(in oklab, var(--surface-2) 70%, transparent);
+  }
+
+  .ledger-table tbody th {
+    font-weight: 500;
+    color: var(--text);
+  }
+
+  .ledger-table[data-sticky="true"] thead th {
+    position: sticky;
+    top: var(--header-h);
+    z-index: 1;
+  }
+
+  @media (max-width: 639.98px) {
+    .ledger-table[data-stack="true"],
+    .ledger-table[data-stack="true"] tbody,
+    .ledger-table[data-stack="true"] tr {
+      display: block;
+    }
+
+    /* Keep the header row available to assistive tech while hiding it visually. */
+    .ledger-table[data-stack="true"] thead {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      clip-path: inset(50%);
+      white-space: nowrap;
+    }
+
+    .ledger-table[data-stack="true"] tbody tr {
+      padding: 0.75rem 0.9rem;
+    }
+
+    .ledger-table[data-stack="true"] td,
+    .ledger-table[data-stack="true"] tbody th {
+      display: grid;
+      grid-template-columns: 7.5rem minmax(0, 1fr);
+      gap: 0.75rem;
+      padding: 0.3rem 0;
+    }
+
+    .ledger-table[data-stack="true"] td::before,
+    .ledger-table[data-stack="true"] tbody th::before {
+      content: attr(data-label);
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      font-weight: 500;
+      line-height: 1.375rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--text-subtle);
+    }
+
+    .ledger-table[data-stack="true"] td:not([data-label]),
+    .ledger-table[data-stack="true"] tbody th:not([data-label]) {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    .ledger-table[data-stack="true"] td:not([data-label])::before,
+    .ledger-table[data-stack="true"] tbody th:not([data-label])::before {
+      content: none;
+    }
+  }
+
+  /* Horizontal scroll container for wide content that cannot stack. */
+  .table-wrap {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+}
+
+/* ------------------------------------------------------------------------------------ */
+/* Reduced motion                                                                       */
+/* ------------------------------------------------------------------------------------ */
+
+/*
+ * Unlayered on purpose: unlayered rules beat every Tailwind layer, so this switches off all
+ * CSS animations and transitions without !important. Motion-driven components additionally
+ * read the preference in JS and render their final state.
+ */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
   *::after {
     animation-duration: 0.01ms;
     animation-iteration-count: 1;
+    animation-delay: 0s;
     transition-duration: 0.01ms;
+    transition-delay: 0s;
     scroll-behavior: auto;
   }
-}
 
-:focus-visible {
-  outline: 3px solid var(--accent);
-  outline-offset: 2px;
-  border-radius: 4px;
-}
-
-a {
-  color: var(--accent);
-  text-underline-offset: 3px;
-}
-
-a:hover {
-  color: var(--accent-strong);
-}
-
-code,
-pre,
-kbd {
-  font-family: var(--font-mono);
-  font-size: 0.875em;
-}
-
-:not(pre) > code {
-  background: var(--code-bg);
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  padding: 0.05em 0.35em;
-  overflow-wrap: anywhere;
-}
-
-pre {
-  background: var(--code-bg);
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 0.85rem 1rem;
-  overflow-x: auto;
-  line-height: 1.5;
-}
-
-::selection {
-  background: color-mix(in srgb, var(--accent) 30%, transparent);
-}
-
-.skip-link {
-  position: absolute;
-  left: 1rem;
-  top: -100px;
-  z-index: 50;
-  background: var(--accent);
-  color: var(--accent-ink);
-  padding: 0.5rem 0.9rem;
-  border-radius: 6px;
-  font-weight: 600;
-}
-
-.skip-link:focus {
-  top: 0.75rem;
-  color: var(--accent-ink);
-}
-
-/* Long-form prose (guidelines, README) */
-.prose-doc h2 {
-  font-size: 1.45rem;
-  font-weight: 700;
-  margin: 2.5rem 0 0.75rem;
-  letter-spacing: -0.01em;
-  scroll-margin-top: 5rem;
-}
-.prose-doc h3 {
-  font-size: 1.12rem;
-  font-weight: 650;
-  margin: 1.75rem 0 0.5rem;
-  scroll-margin-top: 5rem;
-}
-.prose-doc h4 {
-  font-size: 1rem;
-  font-weight: 650;
-  margin: 1.25rem 0 0.4rem;
-}
-.prose-doc p {
-  margin: 0.6rem 0;
-}
-.prose-doc ul,
-.prose-doc ol {
-  margin: 0.6rem 0 0.6rem 1.35rem;
-}
-.prose-doc ul {
-  list-style: disc;
-}
-.prose-doc ol {
-  list-style: decimal;
-}
-.prose-doc li {
-  margin: 0.25rem 0;
-}
-.prose-doc pre {
-  margin: 0.85rem 0;
-}
-.prose-doc blockquote {
-  border-left: 3px solid var(--line);
-  padding-left: 0.9rem;
-  color: var(--muted);
-  margin: 0.75rem 0;
-}
-.prose-doc table {
-  width: 100%;
-  border-collapse: collapse;
-  margin: 0.85rem 0;
-  font-size: 0.925rem;
-}
-.prose-doc th,
-.prose-doc td {
-  border: 1px solid var(--line);
-  padding: 0.45rem 0.6rem;
-  text-align: left;
-  vertical-align: top;
-}
-.prose-doc th {
-  background: var(--surface);
-  font-weight: 600;
-}
-
-.table-wrap {
-  overflow-x: auto;
-  -webkit-overflow-scrolling: touch;
+  .shimmer-track {
+    display: none;
+  }
 }

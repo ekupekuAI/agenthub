@@ -1,25 +1,36 @@
 import type { Metadata } from 'next';
-import Link from 'next/link';
 import { notFound } from 'next/navigation';
-import type { ReactNode } from 'react';
+import { cache, type ReactNode } from 'react';
+import { CompatibilityPanel } from '../../../src/components/skill/CompatibilityPanel';
+import { FilesList } from '../../../src/components/skill/FilesList';
+import { FindingsLedger } from '../../../src/components/skill/FindingsLedger';
+import { LedgerSection } from '../../../src/components/skill/LedgerSection';
+import { PermissionsList } from '../../../src/components/skill/PermissionsList';
+import { ReadmePanel } from '../../../src/components/skill/ReadmePanel';
+import { RequirementsPanel } from '../../../src/components/skill/RequirementsPanel';
+import { SkillMasthead } from '../../../src/components/skill/SkillMasthead';
+import { StatusBanner } from '../../../src/components/skill/StatusBanner';
+import { StickyRail } from '../../../src/components/skill/StickyRail';
+import { VersionsTable } from '../../../src/components/skill/VersionsTable';
 import {
-  Badge,
+  ArrowDownIcon,
+  Callout,
+  Container,
   DecisionBadge,
-  OutcomeBadge,
-  StatusBadge,
-  VerifiedBadge,
-} from '../../../src/components/Badges';
-import { CopyCommand } from '../../../src/components/CopyCommand';
-import { SafeMarkdown } from '../../../src/components/SafeMarkdown';
-import type { SkillInfoVersion } from '../../../src/lib/api-types';
+  formatBytes,
+  formatDate,
+  ReceiptRow,
+  Reveal,
+  TrustReceipt,
+} from '../../../src/components/ui';
 import { isApiError } from '../../../src/lib/errors';
-import { findingKey, keyed } from '../../../src/lib/keys';
 import { getRegistry, type SkillDetail } from '../../../src/lib/registry';
-import { AGENT_LABELS, AGENTS, SLUG_RE } from '../../../src/lib/validation';
+import { SLUG_RE } from '../../../src/lib/validation';
 
 type Params = Promise<{ slug: string }>;
 
-async function load(slug: string): Promise<SkillDetail | null> {
+/** Cached per request, so metadata and the page share one registry read. */
+const load = cache(async (slug: string): Promise<SkillDetail | null> => {
   if (!SLUG_RE.test(slug) || slug.length > 64) return null;
   try {
     return await (await getRegistry()).getSkill(slug);
@@ -27,7 +38,7 @@ async function load(slug: string): Promise<SkillDetail | null> {
     if (isApiError(error) && error.code === 'NOT_FOUND') return null;
     throw error;
   }
-}
+});
 
 export async function generateMetadata({ params }: { params: Params }): Promise<Metadata> {
   const { slug } = await params;
@@ -39,60 +50,6 @@ export async function generateMetadata({ params }: { params: Params }): Promise<
   };
 }
 
-function shortDigest(digest: string): string {
-  return digest.replace(/^sha256:/, '').slice(0, 12);
-}
-
-function formatDate(iso?: string): string {
-  if (!iso) return '—';
-  return new Date(iso).toLocaleDateString('en-GB', {
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric',
-    timeZone: 'UTC',
-  });
-}
-
-function Section({ id, title, children }: { id: string; title: string; children: ReactNode }) {
-  return (
-    <section aria-labelledby={id} className="rounded-xl border border-line bg-canvas p-5">
-      <h2 id={id} className="text-base font-semibold">
-        {title}
-      </h2>
-      <div className="mt-3">{children}</div>
-    </section>
-  );
-}
-
-function Permissions({ version }: { version: SkillInfoVersion }) {
-  const p = version.permissions ?? {};
-  const network =
-    p.network === true
-      ? 'Any host'
-      : Array.isArray(p.network) && p.network.length
-        ? p.network.join(', ')
-        : null;
-  const rows: [string, string | null][] = [
-    ['Network', network],
-    ['Commands it may run', p.exec?.length ? p.exec.join(', ') : null],
-    ['Environment variables', p.env?.length ? p.env.join(', ') : null],
-    ['Secrets', p.secrets?.length ? p.secrets.join(', ') : null],
-    ['File writes', p.fs?.write?.length ? p.fs.write.join(', ') : null],
-  ];
-  return (
-    <dl className="grid gap-2 text-sm">
-      {rows.map(([label, value]) => (
-        <div key={label} className="flex flex-wrap justify-between gap-x-4">
-          <dt className="text-muted">{label}</dt>
-          <dd className={value ? 'font-mono text-ink' : 'text-muted'}>
-            {value ?? 'None declared'}
-          </dd>
-        </div>
-      ))}
-    </dl>
-  );
-}
-
 export default async function SkillPage({ params }: { params: Params }) {
   const { slug } = await params;
   const detail = await load(slug);
@@ -100,339 +57,169 @@ export default async function SkillPage({ params }: { params: Params }) {
 
   const { info, shown } = detail;
   const findings = shown?.scan?.findings ?? [];
-  const counts = { INFO: 0, WARN: 0, BLOCK: 0 };
-  for (const f of findings) counts[f.decision] += 1;
-  const installable = shown?.status === 'active';
+  // Prefer the stored totals: `findings` may be cut at the storage limit.
+  let counts = shown?.scan?.counts;
+  if (!counts) {
+    counts = { INFO: 0, WARN: 0, BLOCK: 0 };
+    for (const f of findings) counts[f.decision] += 1;
+  }
+  const findingsTotal = counts.INFO + counts.WARN + counts.BLOCK;
+  const findingsTruncated = Boolean(shown?.scan?.findingsTruncated);
+  const hasManifest = detail.files.some((file) => file.path === 'agenthub.yaml');
+
+  let banner: ReactNode = null;
+  if (!shown) {
+    banner = (
+      <Callout tone="warning" title="No version available" role="status">
+        This skill has no published version to show or install.
+      </Callout>
+    );
+  } else if (shown.status !== 'active') {
+    banner = (
+      <StatusBanner status={shown.status} version={shown.version} reason={detail.statusReason} />
+    );
+  }
 
   return (
-    <div className="mx-auto max-w-6xl px-4 py-8 sm:px-6">
-      <nav aria-label="Breadcrumb" className="text-sm text-muted">
-        <Link href="/">Search</Link> <span aria-hidden="true">/</span>{' '}
-        <span aria-current="page">{info.slug}</span>
-      </nav>
+    <>
+      <SkillMasthead info={info} shown={shown} license={detail.license} banner={banner} />
 
-      <header className="mt-4 flex flex-col gap-4 border-b border-line pb-6 lg:flex-row lg:items-start lg:justify-between">
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-3">
-            <h1 className="break-words text-3xl font-bold tracking-tight">{info.name}</h1>
-            {shown ? <span className="font-mono text-lg text-muted">v{shown.version}</span> : null}
-            {shown ? <StatusBadge status={shown.status} /> : null}
-          </div>
-          <p className="mt-2 max-w-3xl text-muted">{info.summary}</p>
-          <div className="mt-3 flex flex-wrap items-center gap-2 text-sm">
-            {info.publisher ? (
-              <>
-                <span>
-                  Published by <strong>{info.publisher.name}</strong>
-                </span>
-                <VerifiedBadge verified={info.publisher.verified} />
-              </>
-            ) : null}
-            {info.category ? (
-              <Link
-                href={`/?category=${encodeURIComponent(info.category)}`}
-                className="rounded-full border border-line px-2 py-0.5 text-xs no-underline"
-              >
-                {info.category}
-              </Link>
-            ) : null}
-            {detail.license ? <Badge tone="neutral">License: {detail.license}</Badge> : null}
-          </div>
-        </div>
-        <div className="w-full shrink-0 lg:w-[26rem]">
-          {installable ? (
-            <>
-              <p className="mb-1.5 text-sm font-semibold">Install</p>
-              <CopyCommand command={`agenthub install ${info.slug}`} />
-              <p className="mt-2 text-xs text-muted">
-                The CLI shows the install plan and every finding before it writes anything.{' '}
-                <Link href="/guidelines#installing-safely">Installing safely</Link>
-              </p>
-            </>
-          ) : (
-            <div
-              role="alert"
-              className="rounded-lg border border-warn-line bg-warn-bg p-3 text-sm text-warn-fg"
-            >
-              <p className="font-semibold">
-                {shown?.status === 'revoked'
-                  ? 'This version has been revoked.'
-                  : 'This version is quarantined and cannot be installed.'}
-              </p>
-              {detail.statusReason ? <p className="mt-1">Reason: {detail.statusReason}</p> : null}
-            </div>
-          )}
-        </div>
-      </header>
+      <Container className="pt-10 pb-6 lg:pt-14">
+        {/*
+         * Under 1024px the rail is `display: contents`: its panels join this one-column grid
+         * and `order` puts the receipt and compatibility above the README.
+         */}
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_22.5rem] lg:items-start lg:gap-10">
+          <ReadmePanel
+            source={detail.readme}
+            truncated={detail.readmeTruncated}
+            className="order-3 lg:order-none lg:col-start-1 lg:row-start-1"
+          />
 
-      <div className="mt-8 grid gap-6 lg:grid-cols-[minmax(0,1fr)_22rem]">
-        <div className="flex min-w-0 flex-col gap-6">
-          <section
-            aria-labelledby="trust-heading"
-            className="rounded-xl border border-line bg-canvas p-5"
-          >
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <h2 id="trust-heading" className="text-base font-semibold">
-                Trust evidence
-              </h2>
-              <OutcomeBadge outcome={shown?.scan?.outcome} />
-            </div>
+          <StickyRail className="lg:col-start-2 lg:row-start-1">
             {shown ? (
-              <dl className="mt-4 grid gap-3 text-sm sm:grid-cols-2">
-                <div className="min-w-0">
-                  <dt className="text-muted">Content digest</dt>
-                  <dd className="break-all font-mono text-xs">{shown.digest}</dd>
-                </div>
-                <div className="min-w-0">
-                  <dt className="text-muted">Archive digest</dt>
-                  <dd className="break-all font-mono text-xs">{shown.archiveDigest}</dd>
-                </div>
-                <div>
-                  <dt className="text-muted">Scanner</dt>
-                  <dd>
-                    {shown.scan ? (
-                      <>
-                        <span className="font-mono">{shown.scan.scannerVersion}</span> · scanned{' '}
-                        {formatDate(shown.scan.scannedAt)}
-                      </>
-                    ) : (
-                      'Not scanned'
-                    )}
-                  </dd>
-                </div>
-                <div>
-                  <dt className="text-muted">Findings</dt>
-                  <dd className="flex flex-wrap gap-1.5">
-                    <Badge tone="bad">{counts.BLOCK} BLOCK</Badge>
-                    <Badge tone="warn">{counts.WARN} WARN</Badge>
-                    <Badge tone="info">{counts.INFO} INFO</Badge>
-                  </dd>
-                </div>
-              </dl>
-            ) : null}
-
-            {findings.length === 0 ? (
-              <p className="mt-4 text-sm text-muted">
-                The scanner reported no findings for this version. That is evidence, not a
-                guarantee: read the files you install.
-              </p>
-            ) : (
-              <div className="table-wrap mt-4">
-                <table className="w-full min-w-[40rem] border-collapse text-left text-sm">
-                  <caption className="sr-only">Scanner findings for this version</caption>
-                  <thead>
-                    <tr className="border-b border-line text-xs uppercase tracking-wide text-muted">
-                      <th scope="col" className="py-2 pr-3 font-semibold">
-                        Decision
-                      </th>
-                      <th scope="col" className="py-2 pr-3 font-semibold">
-                        Rule
-                      </th>
-                      <th scope="col" className="py-2 pr-3 font-semibold">
-                        Location
-                      </th>
-                      <th scope="col" className="py-2 pr-3 font-semibold">
-                        Evidence
-                      </th>
-                      <th scope="col" className="py-2 font-semibold">
-                        Declared
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {keyed(findings, findingKey).map(({ item: f, key }) => (
-                      <tr key={key} className="border-b border-line align-top">
-                        <td className="py-2 pr-3">
-                          <DecisionBadge decision={f.decision} />
-                        </td>
-                        <td className="py-2 pr-3">
-                          <span className="font-mono text-xs">{f.ruleId}</span>
-                          <p className="mt-0.5 text-xs text-muted">{f.message}</p>
-                        </td>
-                        <td className="py-2 pr-3 font-mono text-xs break-all">
-                          {f.file}
-                          {f.line > 0 ? `:${f.line}` : ''}
-                        </td>
-                        <td className="py-2 pr-3">
-                          <code className="text-xs break-all">{f.evidence}</code>
-                        </td>
-                        <td className="py-2">{f.declared ? 'Yes' : 'No'}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </section>
-
-          <section
-            aria-labelledby="readme-heading"
-            className="rounded-xl border border-line bg-canvas p-5"
-          >
-            <h2 id="readme-heading" className="text-base font-semibold">
-              SKILL.md
-            </h2>
-            <p className="mt-1 text-xs text-muted">
-              Shown as plain text. Nothing in a skill is ever rendered as HTML here.
-            </p>
-            <div className="mt-4 border-t border-line pt-2">
-              {detail.readme.trim() ? (
-                <SafeMarkdown source={detail.readme} />
-              ) : (
-                <p className="text-muted">This skill has no body text.</p>
-              )}
-            </div>
-          </section>
-
-          {shown?.releaseNotes ? (
-            <Section id="notes-heading" title={`Release notes for v${shown.version}`}>
-              <p className="whitespace-pre-wrap text-sm">{shown.releaseNotes}</p>
-            </Section>
-          ) : null}
-
-          <section
-            aria-labelledby="versions-heading"
-            className="rounded-xl border border-line bg-canvas p-5"
-          >
-            <h2 id="versions-heading" className="text-base font-semibold">
-              Versions
-            </h2>
-            <div className="table-wrap mt-3">
-              <table className="w-full min-w-[34rem] border-collapse text-left text-sm">
-                <caption className="sr-only">All published versions</caption>
-                <thead>
-                  <tr className="border-b border-line text-xs uppercase tracking-wide text-muted">
-                    <th scope="col" className="py-2 pr-3 font-semibold">
-                      Version
-                    </th>
-                    <th scope="col" className="py-2 pr-3 font-semibold">
-                      Status
-                    </th>
-                    <th scope="col" className="py-2 pr-3 font-semibold">
-                      Channel
-                    </th>
-                    <th scope="col" className="py-2 pr-3 font-semibold">
-                      Published
-                    </th>
-                    <th scope="col" className="py-2 font-semibold">
-                      Digest
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {info.versions.map((v) => (
-                    <tr
-                      key={v.version}
-                      className={`border-b border-line align-top ${v.status !== 'active' ? 'text-muted' : ''}`}
+              <TrustReceipt
+                className="order-1"
+                subject={`${info.slug}@${shown.version}`}
+                digest={shown.digest}
+                archiveDigest={shown.archiveDigest}
+                scannerVersion={shown.scan?.scannerVersion}
+                scannedAt={shown.scan?.scannedAt}
+                outcome={shown.scan?.outcome}
+                status={shown.status}
+                counts={counts}
+                footer={
+                  <div className="grid gap-5">
+                    <PermissionsList permissions={shown.permissions} hasManifest={hasManifest} />
+                    <a
+                      href="#findings"
+                      className="inline-flex min-h-11 items-center justify-between gap-3 rounded-control border border-border bg-surface-2 px-3.5 text-small text-text no-underline transition-colors duration-150 hover:border-border-strong"
                     >
-                      <td className="py-2 pr-3 font-mono">
-                        {v.status === 'revoked' ? <s>{v.version}</s> : v.version}
-                      </td>
-                      <td className="py-2 pr-3">
-                        <StatusBadge status={v.status} />
-                        {v.revokedReason ? (
-                          <p className="mt-1 text-xs">Reason: {v.revokedReason}</p>
-                        ) : null}
-                      </td>
-                      <td className="py-2 pr-3">{v.channel}</td>
-                      <td className="py-2 pr-3">{formatDate(v.createdAt)}</td>
-                      <td className="py-2 font-mono text-xs" title={v.digest}>
-                        {shortDigest(v.digest)}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </section>
-        </div>
-
-        <aside className="flex flex-col gap-6" aria-label="Compatibility and requirements">
-          <Section id="compat-heading" title="Compatibility">
-            <table className="w-full border-collapse text-left text-sm">
-              <caption className="sr-only">Supported agents and install mode</caption>
-              <thead>
-                <tr className="border-b border-line text-xs uppercase tracking-wide text-muted">
-                  <th scope="col" className="py-1.5 pr-2 font-semibold">
-                    Agent
-                  </th>
-                  <th scope="col" className="py-1.5 pr-2 font-semibold">
-                    Supported
-                  </th>
-                  <th scope="col" className="py-1.5 font-semibold">
-                    Mode
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {AGENTS.map((agent) => {
-                  const ok = shown?.agents?.includes(agent) ?? false;
-                  return (
-                    <tr key={agent} className="border-b border-line last:border-0">
-                      <th scope="row" className="py-1.5 pr-2 font-medium">
-                        {AGENT_LABELS[agent]}
-                      </th>
-                      <td className="py-1.5 pr-2">
-                        {ok ? (
-                          <span className="font-semibold text-ok-fg">
-                            <span aria-hidden="true">✓ </span>Yes
-                          </span>
-                        ) : (
-                          <span className="text-muted">
-                            <span aria-hidden="true">– </span>No
-                          </span>
-                        )}
-                      </td>
-                      <td className="py-1.5 text-muted">{ok ? 'native' : '—'}</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-            {detail.compatibility ? (
-              <p className="mt-3 text-xs text-muted">Author note: {detail.compatibility}</p>
+                      <span>
+                        {findingsTotal === 0
+                          ? 'Scan details'
+                          : `Read all ${findingsTotal} ${findingsTotal === 1 ? 'finding' : 'findings'}`}
+                      </span>
+                      <ArrowDownIcon size={15} className="text-muted" />
+                    </a>
+                  </div>
+                }
+              >
+                {shown.sizeBytes !== undefined ? (
+                  <ReceiptRow label="Size">{formatBytes(shown.sizeBytes)}</ReceiptRow>
+                ) : null}
+                {shown.createdAt ? (
+                  <ReceiptRow label="Published">{formatDate(shown.createdAt)}</ReceiptRow>
+                ) : null}
+              </TrustReceipt>
             ) : null}
-          </Section>
+            <CompatibilityPanel
+              className="order-2"
+              agents={shown?.agents ?? []}
+              note={detail.compatibility}
+            />
+            <RequirementsPanel className="order-4" requirements={shown?.requirements} />
+          </StickyRail>
+        </div>
+      </Container>
 
-          <Section id="perm-heading" title="Declared permissions">
-            {shown ? <Permissions version={shown} /> : null}
-            <p className="mt-3 text-xs text-muted">
-              Declared behavior downgrades matching findings; undeclared behavior is flagged.
-            </p>
-          </Section>
+      <Container className="pb-16 lg:pb-24">
+        {shown ? (
+          <Reveal>
+            <LedgerSection
+              id="findings"
+              eyebrow="Scan"
+              title="Findings"
+              lede={
+                shown.scan
+                  ? `Every file of ${shown.version} was checked by scanner ${shown.scan.scannerVersion}${shown.scan.scannedAt ? ` on ${formatDate(shown.scan.scannedAt)}` : ''}.`
+                  : 'No scan has been recorded for this version.'
+              }
+              aside={
+                findingsTotal > 0 ? (
+                  <p className="flex flex-wrap gap-1.5">
+                    <DecisionBadge decision="BLOCK" count={counts.BLOCK} />
+                    <DecisionBadge decision="WARN" count={counts.WARN} />
+                    <DecisionBadge decision="INFO" count={counts.INFO} />
+                  </p>
+                ) : null
+              }
+            >
+              {findingsTruncated ? (
+                <Callout tone="note" title="Not every finding is listed" className="mb-6">
+                  {findings.length === 0
+                    ? `The scan reported ${findingsTotal} ${findingsTotal === 1 ? 'finding' : 'findings'}, but they are not stored for display.`
+                    : `Showing ${findings.length} of ${findingsTotal} findings, most severe first.`}{' '}
+                  Run <code>agenthub info {info.slug}</code> or scan the package locally to see all
+                  of them.
+                </Callout>
+              ) : null}
+              {findings.length > 0 || !findingsTruncated ? (
+                <FindingsLedger findings={findings} scanned={Boolean(shown.scan)} />
+              ) : null}
+            </LedgerSection>
+          </Reveal>
+        ) : null}
 
-          <Section id="req-heading" title="Requirements">
-            {shown?.requirements?.length ? (
-              <ul className="grid gap-1.5 text-sm">
-                {shown.requirements.map((r) => (
-                  <li key={`${r.kind}-${r.name}`} className="flex justify-between gap-3">
-                    <span>
-                      <span className="text-muted">{r.kind}</span>{' '}
-                      <span className="font-mono">{r.name}</span>
-                    </span>
-                    {r.constraint ? (
-                      <span className="font-mono text-muted">{r.constraint}</span>
-                    ) : null}
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              <p className="text-sm text-muted">No runtime, command or MCP requirements.</p>
-            )}
-          </Section>
+        <Reveal>
+          <LedgerSection
+            id="versions"
+            eyebrow="History"
+            title="Versions"
+            lede="Published versions never change. A fix ships as a new version; a bad one is revoked."
+          >
+            <VersionsTable versions={info.versions} current={shown?.version} />
+          </LedgerSection>
+        </Reveal>
 
-          <Section id="files-heading" title={`Files (${detail.files.length})`}>
-            <ul className="grid gap-1 text-xs">
-              {detail.files.map((f) => (
-                <li key={f.path} className="flex justify-between gap-3">
-                  <span className="break-all font-mono">{f.path}</span>
-                  <span className="shrink-0 text-muted">{f.size.toLocaleString('en-US')} B</span>
-                </li>
-              ))}
-            </ul>
-          </Section>
-        </aside>
-      </div>
-    </div>
+        {shown?.releaseNotes ? (
+          <Reveal>
+            <LedgerSection
+              id="release-notes"
+              eyebrow={`v${shown.version}`}
+              title="Release notes"
+              lede="Written by the publisher."
+            >
+              <p className="m-0 max-w-reading whitespace-pre-wrap text-body text-muted [overflow-wrap:anywhere]">
+                {shown.releaseNotes}
+              </p>
+            </LedgerSection>
+          </Reveal>
+        ) : null}
+
+        {shown ? (
+          <Reveal>
+            <LedgerSection
+              id="files"
+              eyebrow="Contents"
+              title="Files"
+              lede="What the package installs. Every file is covered by the content digest."
+            >
+              <FilesList files={detail.files} />
+            </LedgerSection>
+          </Reveal>
+        ) : null}
+      </Container>
+    </>
   );
 }

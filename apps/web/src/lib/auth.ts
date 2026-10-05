@@ -1,6 +1,7 @@
 import { createHash, createHmac, hkdfSync, randomBytes, timingSafeEqual } from 'node:crypto';
 import { adminToken } from '../config';
 import { ApiError } from './errors';
+import { checkIdentityLimit, enforceAuthFailureLimit, enforceDecision } from './rate-limit';
 
 // ---------------------------------------------------------------------------
 // Publisher tokens
@@ -57,14 +58,20 @@ export function verifyAdminToken(presented: string | null | undefined): boolean 
   return hashesEqual(hashToken(presented), hashToken(expected));
 }
 
-/** Throws 503 when admin is disabled and 401 when the bearer token is wrong. */
+/**
+ * Throws 503 when admin is disabled, 401 when the bearer token is wrong (charged to the
+ * client's failed-credential bucket, 429 once that is exhausted) and 429 when the admin
+ * credential itself is over its rate limit.
+ */
 export function requireAdminBearer(request: Request): void {
   if (!adminEnabled()) throw new ApiError('UNAVAILABLE', 'Admin is disabled on this registry.');
   if (!verifyAdminToken(bearerToken(request.headers.get('authorization')))) {
+    enforceAuthFailureLimit(request.headers);
     throw new ApiError('UNAUTHORIZED', 'A valid admin token is required.', {
       headers: { 'WWW-Authenticate': 'Bearer' },
     });
   }
+  enforceDecision(checkIdentityLimit('admin', 'admin-token'));
 }
 
 // ---------------------------------------------------------------------------
@@ -73,13 +80,24 @@ export function requireAdminBearer(request: Request): void {
 
 export const SESSION_TTL_MS = 8 * 60 * 60 * 1000;
 
+/**
+ * Session signing key. Always bound to the current admin token: rotating or removing
+ * AGENTHUB_ADMIN_TOKEN invalidates every existing session, also when AGENTHUB_SESSION_SECRET
+ * pins the key material. Null when admin is disabled.
+ */
 function sessionKey(): Buffer | null {
-  const secret = process.env.AGENTHUB_SESSION_SECRET;
-  if (secret && secret.length >= 32) return Buffer.from(secret, 'utf8');
   const token = adminToken();
   if (!token) return null;
+  const secret = process.env.AGENTHUB_SESSION_SECRET;
+  const material = secret && secret.length >= 32 ? secret : token;
   return Buffer.from(
-    hkdfSync('sha256', token, 'agenthub/admin-session', 'session-signing-key/v1', 32),
+    hkdfSync(
+      'sha256',
+      material,
+      'agenthub/admin-session',
+      `session-signing-key/v2/${hashToken(token)}`,
+      32,
+    ),
   );
 }
 
@@ -96,20 +114,46 @@ export function createSession(now = Date.now()): { value: string; expires: Date 
   return { value: `${payload}.${sign(payload, key)}`, expires: new Date(expires) };
 }
 
-export function verifySession(value: string | null | undefined, now = Date.now()): boolean {
+/** The verified session's nonce and expiry, or null when the value is not a valid session. */
+export function readSession(
+  value: string | null | undefined,
+  now = Date.now(),
+): { nonce: string; expires: Date } | null {
   const key = sessionKey();
-  if (!key || !value || value.length > 256) return false;
+  if (!key || !value || value.length > 256) return null;
   const parts = value.split('.');
-  if (parts.length !== 4 || parts[0] !== 'v1') return false;
+  if (parts.length !== 4 || parts[0] !== 'v1') return null;
   const [version, expiresRaw, nonce, signature] = parts as [string, string, string, string];
   const expected = Buffer.from(sign(`${version}.${expiresRaw}.${nonce}`, key), 'utf8');
   const actual = Buffer.from(signature, 'utf8');
-  if (expected.length !== actual.length || !timingSafeEqual(expected, actual)) return false;
+  if (expected.length !== actual.length || !timingSafeEqual(expected, actual)) return null;
   const expires = Number(expiresRaw);
-  return Number.isSafeInteger(expires) && expires > now && expires <= now + SESSION_TTL_MS;
+  if (!Number.isSafeInteger(expires) || expires <= now || expires > now + SESSION_TTL_MS) {
+    return null;
+  }
+  return { nonce, expires: new Date(expires) };
+}
+
+/** Signature and expiry check only; server-side sign-out is checked by hasAdminSession(). */
+export function verifySession(value: string | null | undefined, now = Date.now()): boolean {
+  return readSession(value, now) !== null;
 }
 
 export function sessionCookieName(): string {
   // The __Host- prefix requires Secure, which needs HTTPS (production only).
   return process.env.NODE_ENV === 'production' ? '__Host-agenthub_admin' : 'agenthub_admin';
+}
+
+/**
+ * Cookie attributes for the admin session. Clearing must repeat them: browsers ignore a
+ * deletion of a __Host- cookie that lacks Secure and Path=/.
+ */
+export function sessionCookieOptions(expires: Date) {
+  return {
+    httpOnly: true,
+    sameSite: 'strict' as const,
+    secure: process.env.NODE_ENV === 'production',
+    path: '/',
+    expires,
+  };
 }

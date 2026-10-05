@@ -229,7 +229,11 @@ describe('publisher tokens', () => {
   it('authenticates only the exact token', async () => {
     const created = await env.registry.createPublisher('carol', false);
     expect((await env.registry.authenticatePublisher(created.token))?.id).toBe(created.id);
-    expect(await env.registry.authenticatePublisher(`${created.token.slice(0, -1)}A`)).toBeNull();
+    // Change the last character (to a different one: the token may already end in 'A').
+    const last = created.token.endsWith('A') ? 'B' : 'A';
+    expect(
+      await env.registry.authenticatePublisher(`${created.token.slice(0, -1)}${last}`),
+    ).toBeNull();
     expect(await env.registry.authenticatePublisher('')).toBeNull();
     expect(await env.registry.authenticatePublisher(null)).toBeNull();
     await expectApiError(env.registry.createPublisher('carol', false), 'CONFLICT', 409);

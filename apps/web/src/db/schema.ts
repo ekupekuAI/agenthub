@@ -2,6 +2,7 @@
  * Registry schema (MVP §5). The SQL in ./migrate.ts creates the same tables; keep both in sync.
  */
 import {
+  date,
   index,
   integer,
   jsonb,
@@ -33,6 +34,8 @@ export const publishers = pgTable('publishers', {
   tokenHash: text('token_hash').notNull().unique(),
   verifiedAt: ts('verified_at'),
   createdAt: ts('created_at').notNull().defaultNow(),
+  /** Set when an administrator suspended the publisher: its token stops working. */
+  disabledAt: ts('disabled_at'),
 });
 
 export const agents = pgTable('agents', {
@@ -90,6 +93,9 @@ export const skillVersions = pgTable(
   (t) => [
     unique('skill_versions_skill_version_unique').on(t.skillId, t.version),
     index('skill_versions_status_idx').on(t.status),
+    index('skill_versions_skill_idx').on(t.skillId),
+    index('skill_versions_digest_idx').on(t.digest),
+    index('skill_versions_created_idx').on(t.createdAt),
   ],
 );
 
@@ -135,8 +141,14 @@ export const securityScans = pgTable(
       .references(() => skillVersions.id),
     scannerVersion: text('scanner_version').notNull(),
     outcome: text('outcome', { enum: ['allow', 'confirm', 'block'] }).notNull(),
+    /** At most MAX_STORED_FINDINGS findings, BLOCK first. */
     findingsJson: jsonb('findings_json').notNull(),
     createdAt: ts('created_at').notNull().defaultNow(),
+    /** Findings before the cap, and per decision. Null on scans stored before the cap. */
+    findingsTotal: integer('findings_total'),
+    blockCount: integer('block_count'),
+    warnCount: integer('warn_count'),
+    infoCount: integer('info_count'),
   },
   (t) => [index('security_scans_version_idx').on(t.skillVersionId, t.createdAt)],
 );
@@ -152,12 +164,32 @@ export const installEvents = pgTable('install_events', {
   createdAt: ts('created_at').notNull().defaultNow(),
 });
 
+/** Download counters, aggregated per version, agent ('' when unknown) and UTC day. */
+export const installCounts = pgTable(
+  'install_counts',
+  {
+    skillVersionId: uuid('skill_version_id')
+      .notNull()
+      .references(() => skillVersions.id),
+    agent: text('agent').notNull().default(''),
+    day: date('day', { mode: 'string' }).notNull(),
+    count: integer('count').notNull().default(0),
+  },
+  (t) => [primaryKey({ columns: [t.skillVersionId, t.agent, t.day] })],
+);
+
 export const revocations = pgTable('revocations', {
   skillVersionId: uuid('skill_version_id')
     .primaryKey()
     .references(() => skillVersions.id),
   reason: text('reason').notNull(),
   createdAt: ts('created_at').notNull().defaultNow(),
+});
+
+/** Admin sessions signed out before their expiry (rows are pruned after expiry). */
+export const adminSessionRevocations = pgTable('admin_session_revocations', {
+  nonce: text('nonce').primaryKey(),
+  expiresAt: ts('expires_at').notNull(),
 });
 
 export const schema = {
@@ -170,5 +202,7 @@ export const schema = {
   requirements,
   securityScans,
   installEvents,
+  installCounts,
   revocations,
+  adminSessionRevocations,
 };

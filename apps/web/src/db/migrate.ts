@@ -103,6 +103,33 @@ CREATE TABLE IF NOT EXISTS revocations (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
+-- Hardening (additive; safe to run again on an existing database).
+ALTER TABLE publishers ADD COLUMN IF NOT EXISTS disabled_at timestamptz;
+
+ALTER TABLE security_scans ADD COLUMN IF NOT EXISTS findings_total integer;
+ALTER TABLE security_scans ADD COLUMN IF NOT EXISTS block_count integer;
+ALTER TABLE security_scans ADD COLUMN IF NOT EXISTS warn_count integer;
+ALTER TABLE security_scans ADD COLUMN IF NOT EXISTS info_count integer;
+
+CREATE INDEX IF NOT EXISTS skill_versions_skill_idx ON skill_versions (skill_id);
+CREATE INDEX IF NOT EXISTS skill_versions_digest_idx ON skill_versions (digest);
+CREATE INDEX IF NOT EXISTS skill_versions_created_idx ON skill_versions (created_at);
+
+-- Download counters: one row per version, agent and day (install_events is no longer written).
+CREATE TABLE IF NOT EXISTS install_counts (
+  skill_version_id uuid NOT NULL REFERENCES skill_versions(id),
+  agent text NOT NULL DEFAULT '',
+  day date NOT NULL,
+  count integer NOT NULL DEFAULT 0,
+  PRIMARY KEY (skill_version_id, agent, day)
+);
+
+-- Admin sessions signed out before they expire.
+CREATE TABLE IF NOT EXISTS admin_session_revocations (
+  nonce text PRIMARY KEY,
+  expires_at timestamptz NOT NULL
+);
+
 INSERT INTO agents (id, display_name, detector_version) VALUES
   ('claude-code', 'Claude Code', '1'),
   ('codex', 'Codex', '1'),

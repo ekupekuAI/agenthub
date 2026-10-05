@@ -4,9 +4,11 @@
  * "fixture-lab" publisher so the moderation queue and warnings can be demonstrated.
  *
  * Idempotent: existing publishers are reused and existing versions are skipped.
- * Run with `npm run seed -w apps/web` (bundled by scripts/run-seed.mjs).
+ * Run with `npm run seed -w apps/web` (bundled by scripts/run-seed.mjs). New publisher tokens
+ * go to `<data dir>/seed-tokens.txt` (owner-only); pass `-- --print-tokens` to print them.
+ * Refuses to run with NODE_ENV=production unless AGENTHUB_SEED_FORCE=1.
  */
-import { existsSync, readdirSync } from 'node:fs';
+import { appendFileSync, chmodSync, existsSync, mkdirSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import { loadSkillFromDir, packSkill } from '@agenthub/core';
 import { dataDir } from '../src/config';
@@ -37,7 +39,16 @@ async function ensurePublisher(
   }
   const created = await registry.createPublisher(name, verified);
   console.log(`publisher ${name}: created${verified ? ' (verified)' : ''}`);
-  console.log(`  token (shown once, store it safely): ${created.token}`);
+  if (process.argv.includes('--print-tokens')) {
+    console.log(`  token (shown once, store it safely): ${created.token}`);
+  } else {
+    // Keep tokens out of terminal scrollback and CI logs: write them to an owner-only file.
+    const file = path.join(dataDir(), 'seed-tokens.txt');
+    mkdirSync(dataDir(), { recursive: true });
+    appendFileSync(file, `${name}\t${created.token}\n`, { mode: 0o600 });
+    chmodSync(file, 0o600);
+    console.log(`  token written to ${file} (owner-only; delete it once stored safely)`);
+  }
   return created.id;
 }
 
@@ -67,6 +78,12 @@ async function publishDir(registry: Registry, dir: string, publisherId: string):
 }
 
 async function main(): Promise<void> {
+  if (process.env.NODE_ENV === 'production' && process.env.AGENTHUB_SEED_FORCE !== '1') {
+    throw new Error(
+      'Refusing to seed with NODE_ENV=production (it creates publishers and tokens). ' +
+        'Set AGENTHUB_SEED_FORCE=1 to seed anyway.',
+    );
+  }
   const root = findRepoRoot(process.cwd());
   console.log(`data dir: ${dataDir()}`);
   const registry = await getRegistry();

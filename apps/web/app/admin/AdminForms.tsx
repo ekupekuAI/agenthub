@@ -1,43 +1,77 @@
 'use client';
 
-import { useActionState } from 'react';
+import { useActionState, useEffect } from 'react';
+import { useFormStatus } from 'react-dom';
+import { resetAdminTab } from '../../src/components/admin/AdminTabs';
+import {
+  ArrowRightIcon,
+  Button,
+  Callout,
+  Checkbox,
+  CopyCommand,
+  PlusIcon,
+  TextField,
+} from '../../src/components/ui';
 import {
   type CreatePublisherState,
   createPublisherAction,
   type LoginState,
   loginAction,
+  logoutAction,
 } from './actions';
 
-const input = 'w-full rounded-md border border-line bg-canvas px-3 py-2 text-ink';
-const primary =
-  'rounded-md bg-accent px-4 py-2 font-semibold text-accent-ink transition-colors hover:bg-accent-strong disabled:opacity-60';
+const TOKEN_FIELD_ID = 'admin-token';
 
 export function LoginForm() {
   const [state, action, pending] = useActionState<LoginState, FormData>(loginAction, {});
+
+  // The form clears itself after a failed attempt; put the caret back in the token field.
+  useEffect(() => {
+    if (state.error) document.getElementById(TOKEN_FIELD_ID)?.focus();
+  }, [state]);
+
   return (
-    <form
-      action={action}
-      className="flex max-w-md flex-col gap-3 rounded-xl border border-line bg-canvas p-5"
-    >
-      <label htmlFor="admin-token" className="text-sm font-semibold">
-        Admin token
-      </label>
-      <input
-        id="admin-token"
+    <form action={action} className="grid gap-5">
+      <TextField
+        id={TOKEN_FIELD_ID}
         name="token"
+        label="Admin token"
         type="password"
+        mono
         required
         autoComplete="current-password"
-        className={`${input} font-mono`}
+        autoCapitalize="none"
+        spellCheck={false}
+        error={state.error}
+        hint="The value this server was started with."
       />
-      {state.error ? (
-        <p role="alert" className="text-sm text-bad-fg">
-          {state.error}
-        </p>
-      ) : null}
-      <button type="submit" disabled={pending} className={`${primary} self-start`}>
-        {pending ? 'Signing in…' : 'Sign in'}
-      </button>
+      <Button
+        type="submit"
+        variant="primary"
+        size="lg"
+        fullWidth
+        loading={pending}
+        trailingIcon={<ArrowRightIcon size={16} />}
+      >
+        Sign in
+      </Button>
+    </form>
+  );
+}
+
+function SignOutButton() {
+  const { pending } = useFormStatus();
+  return (
+    <Button type="submit" variant="secondary" loading={pending}>
+      Sign out
+    </Button>
+  );
+}
+
+export function SignOutForm() {
+  return (
+    <form action={logoutAction} onSubmit={resetAdminTab}>
+      <SignOutButton />
     </form>
   );
 }
@@ -48,46 +82,68 @@ export function CreatePublisherForm() {
     { status: 'idle' },
   );
   return (
-    <div className="flex flex-col gap-4">
-      <form action={action} className="flex flex-col gap-3 sm:flex-row sm:items-end">
-        <div className="flex flex-1 flex-col gap-1.5">
-          <label htmlFor="displayName" className="text-sm font-semibold">
-            Display name
-          </label>
-          <input
-            id="displayName"
-            name="displayName"
-            required
-            minLength={2}
-            maxLength={64}
-            className={input}
+    <div className="grid gap-5">
+      <form action={action} className="grid gap-5">
+        <TextField
+          id="displayName"
+          name="displayName"
+          label="Display name"
+          required
+          minLength={2}
+          maxLength={64}
+          autoComplete="off"
+          hint="2 to 64 characters, starting with a letter or digit: letters, digits, spaces, dots, dashes and underscores. It appears on every skill this publisher uploads."
+        />
+        <div>
+          <Checkbox
+            id="verified"
+            name="verified"
+            label="Verified identity"
+            aria-describedby="verified-hint"
           />
+          <p id="verified-hint" className="text-[0.8125rem] text-muted leading-5 sm:pl-7">
+            Tick this only after you have confirmed who the publisher is. Their skills then carry
+            the verified seal.
+          </p>
         </div>
-        <label className="flex items-center gap-2 text-sm sm:pb-2">
-          <input type="checkbox" name="verified" className="h-4 w-4" />
-          Verified identity
-        </label>
-        <button type="submit" disabled={pending} className={primary}>
-          {pending ? 'Creating…' : 'Create publisher'}
-        </button>
+        <div>
+          <Button
+            type="submit"
+            variant="primary"
+            loading={pending}
+            leadingIcon={<PlusIcon size={15} />}
+          >
+            Create publisher
+          </Button>
+        </div>
       </form>
+
       <div aria-live="polite">
         {state.status === 'error' ? (
-          <p role="alert" className="text-sm text-bad-fg">
+          <Callout tone="danger" role="alert" title="Publisher not created">
             {state.message}
-          </p>
+          </Callout>
         ) : null}
         {state.status === 'created' ? (
-          <div className="rounded-lg border border-warn-line bg-warn-bg p-4 text-sm text-warn-fg">
-            <p className="font-semibold">
-              Publisher “{state.displayName}” created
-              {state.verified ? ' (verified)' : ''}. Copy the token now: it is shown only once and
-              cannot be recovered.
+          <Callout
+            tone="warning"
+            title={
+              <>
+                Publisher “{state.displayName}” created{state.verified ? ' (verified)' : ''}. Copy
+                the token now
+              </>
+            }
+          >
+            <p>
+              It is shown only once and cannot be recovered: the registry keeps only a hash of it.
             </p>
-            <code className="mt-2 block break-all rounded-md border border-line bg-canvas p-2 text-ink">
-              {state.token}
-            </code>
-          </div>
+            <CopyCommand
+              command={state.token}
+              prompt={false}
+              label="New publisher token"
+              className="mt-3"
+            />
+          </Callout>
         ) : null}
       </div>
     </div>

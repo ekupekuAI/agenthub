@@ -1,13 +1,63 @@
 import type { Metadata, Viewport } from 'next';
-import { headers } from 'next/headers';
-import Link from 'next/link';
+import localFont from 'next/font/local';
+import { cookies, headers } from 'next/headers';
 import type { ReactNode } from 'react';
+import { MotionProvider } from '../src/components/ui/MotionProvider';
+import { SiteFooter } from '../src/components/ui/SiteFooter';
+import { SiteHeader } from '../src/components/ui/SiteHeader';
+import { SkipLink } from '../src/components/ui/SkipLink';
+import { parseTheme, THEME_COLORS, THEME_COOKIE } from '../src/components/ui/theme';
 import { securityContact } from '../src/config';
+import { cn } from '../src/lib/cn';
 import './globals.css';
+
+/*
+ * Fonts are self-hosted from app/fonts (see app/fonts/LICENSE.txt): nothing is fetched at
+ * build time or at run time. globals.css composes these variables into --font-sans,
+ * --font-mono and --font-display.
+ */
+const geist = localFont({
+  src: './fonts/geist-latin-wght-normal.woff2',
+  weight: '100 900',
+  style: 'normal',
+  display: 'swap',
+  variable: '--font-geist',
+});
+
+const geistMono = localFont({
+  src: './fonts/geist-mono-latin-wght-normal.woff2',
+  weight: '100 900',
+  style: 'normal',
+  display: 'swap',
+  variable: '--font-geist-mono',
+  adjustFontFallback: false,
+});
+
+/** Box-drawing glyphs for terminal output; downloaded only when such a character is used. */
+const geistMonoBox = localFont({
+  src: './fonts/geist-mono-symbols2-wght-normal.woff2',
+  weight: '100 900',
+  style: 'normal',
+  display: 'swap',
+  variable: '--font-geist-mono-box',
+  preload: false,
+  adjustFontFallback: false,
+  declarations: [{ prop: 'unicode-range', value: 'U+23B8-23BD, U+2500-259F' }],
+});
+
+const instrumentSerif = localFont({
+  src: [
+    { path: './fonts/instrument-serif-latin-400-normal.woff2', weight: '400', style: 'normal' },
+    { path: './fonts/instrument-serif-latin-400-italic.woff2', weight: '400', style: 'italic' },
+  ],
+  display: 'swap',
+  variable: '--font-instrument-serif',
+  adjustFontFallback: 'Times New Roman',
+});
 
 export const metadata: Metadata = {
   title: {
-    default: 'agenthub — the package manager and trust layer for agent skills',
+    default: 'agenthub · the package manager and trust layer for agent skills',
     template: '%s · agenthub',
   },
   description:
@@ -16,109 +66,60 @@ export const metadata: Metadata = {
   robots: { index: true, follow: true },
 };
 
-export const viewport: Viewport = {
-  width: 'device-width',
-  initialScale: 1,
-  colorScheme: 'light dark',
-  themeColor: [
-    { media: '(prefers-color-scheme: light)', color: '#ffffff' },
-    { media: '(prefers-color-scheme: dark)', color: '#0b0f14' },
-  ],
-};
+async function storedTheme() {
+  return parseTheme((await cookies()).get(THEME_COOKIE)?.value);
+}
 
-const NAV = [
-  { href: '/', label: 'Search' },
-  { href: '/guidelines', label: 'Guidelines' },
-  { href: '/publish', label: 'Publish' },
-  { href: '/dashboard', label: 'Dashboard' },
-  { href: '/admin', label: 'Admin' },
-];
-
-function Logo() {
-  return (
-    <svg aria-hidden="true" width="26" height="26" viewBox="0 0 32 32" className="shrink-0">
-      <rect x="1" y="1" width="30" height="30" rx="8" fill="var(--accent)" />
-      <path
-        d="M9 21.5 16 8l7 13.5M11.6 17h8.8"
-        stroke="var(--accent-ink)"
-        strokeWidth="2.6"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        fill="none"
-      />
-    </svg>
-  );
+export async function generateViewport(): Promise<Viewport> {
+  const theme = await storedTheme();
+  return {
+    width: 'device-width',
+    initialScale: 1,
+    colorScheme: theme ?? 'dark light',
+    themeColor: theme
+      ? THEME_COLORS[theme]
+      : [
+          { media: '(prefers-color-scheme: light)', color: THEME_COLORS.light },
+          { media: '(prefers-color-scheme: dark)', color: THEME_COLORS.dark },
+        ],
+  };
 }
 
 export default async function RootLayout({ children }: { children: ReactNode }) {
   // Reading request headers opts every page into dynamic rendering, which the nonce CSP needs.
   await headers();
+  // The theme cookie is rendered into the markup, so the first paint is already correct.
+  const theme = await storedTheme();
   const contact = securityContact();
 
   return (
-    <html lang="en">
-      <body className="min-h-screen flex flex-col antialiased">
-        <a href="#main" className="skip-link">
-          Skip to content
-        </a>
-        <header className="sticky top-0 z-40 border-b border-line bg-canvas/95 backdrop-blur supports-[backdrop-filter]:bg-canvas/80">
-          <div className="mx-auto flex max-w-6xl flex-wrap items-center gap-x-6 gap-y-2 px-4 py-3 sm:px-6">
-            <Link
-              href="/"
-              className="flex items-center gap-2 font-semibold tracking-tight text-ink no-underline hover:text-ink"
-            >
-              <Logo />
-              <span className="text-lg">agenthub</span>
-            </Link>
-            <nav aria-label="Main" className="w-full sm:w-auto sm:ml-auto">
-              <ul className="flex flex-wrap gap-x-1 gap-y-1 text-sm">
-                {NAV.map((item) => (
-                  <li key={item.href}>
-                    <Link
-                      href={item.href}
-                      className="block rounded-md px-2.5 py-1.5 font-medium text-muted no-underline transition-colors hover:bg-raised hover:text-ink"
-                    >
-                      {item.label}
-                    </Link>
-                  </li>
-                ))}
-              </ul>
-            </nav>
-          </div>
-        </header>
-
-        <main id="main" tabIndex={-1} className="flex-1 focus:outline-none">
-          {children}
-        </main>
-
-        <footer className="mt-16 border-t border-line bg-surface">
-          <div className="mx-auto flex max-w-6xl flex-col gap-3 px-4 py-8 text-sm text-muted sm:flex-row sm:items-start sm:justify-between sm:px-6">
-            <div>
-              <p className="font-semibold text-ink">agenthub</p>
-              <p>The package manager and trust layer for agent skills.</p>
-            </div>
-            <div className="flex flex-col gap-1 sm:items-end">
-              <nav aria-label="Footer">
-                <ul className="flex flex-wrap gap-4">
-                  <li>
-                    <Link href="/guidelines">Guidelines</Link>
-                  </li>
-                  <li>
-                    <Link href="/guidelines#security-model">Security model</Link>
-                  </li>
-                  <li>
-                    <Link href="/guidelines#reporting">Report a skill</Link>
-                  </li>
-                </ul>
-              </nav>
-              {contact ? (
-                <p>
-                  Security contact: <span className="font-mono text-ink">{contact}</span>
-                </p>
-              ) : null}
-            </div>
-          </div>
-        </footer>
+    <html
+      lang="en"
+      data-theme={theme}
+      className={cn(
+        geist.variable,
+        geistMono.variable,
+        geistMonoBox.variable,
+        instrumentSerif.variable,
+      )}
+    >
+      <body className="flex min-h-dvh flex-col">
+        {/* Without JavaScript nothing animates in, so reveal targets are shown as final. */}
+        <noscript>
+          <style>
+            {
+              '[data-reveal]{opacity:1!important;transform:none!important}[data-pending]{visibility:visible!important}'
+            }
+          </style>
+        </noscript>
+        <MotionProvider>
+          <SkipLink />
+          <SiteHeader initialTheme={theme} />
+          <main id="main" tabIndex={-1} className="flex-1">
+            {children}
+          </main>
+          <SiteFooter securityContact={contact} />
+        </MotionProvider>
       </body>
     </html>
   );

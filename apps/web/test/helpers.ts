@@ -2,27 +2,31 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { loadSkillFromDir, packSkill } from '@agenthub/core';
-import { openDatabase } from '../src/db/client';
+import { type DbHandle, openDatabase } from '../src/db/client';
 import { Registry } from '../src/lib/registry';
+import type { ScanRunner } from '../src/lib/scan-runner';
 import { LocalFsStore } from '../src/storage';
 
 export interface TestEnv {
   registry: Registry;
   root: string;
+  handle: DbHandle;
   cleanup(): Promise<void>;
 }
 
 /** In-memory PGlite plus a temp-dir artifact store. */
-export async function createTestRegistry(): Promise<TestEnv> {
+export async function createTestRegistry(opts: { scanner?: ScanRunner } = {}): Promise<TestEnv> {
   const root = await mkdtemp(path.join(tmpdir(), 'agenthub-web-'));
   const handle = await openDatabase();
   const registry = new Registry({
     db: handle.db,
     store: new LocalFsStore(path.join(root, 'artifacts')),
+    ...(opts.scanner ? { scanner: opts.scanner } : {}),
   });
   return {
     registry,
     root,
+    handle,
     async cleanup() {
       await handle.close();
       await rm(root, { recursive: true, force: true });
@@ -40,6 +44,10 @@ export interface SkillOptions {
   files?: Record<string, string>;
   /** Raw YAML lines appended to agenthub.yaml. */
   manifestExtra?: string;
+  /** Leave agenthub.yaml out (publish with an explicit version). */
+  noManifest?: boolean;
+  /** SKILL.md body (after the frontmatter). */
+  body?: string;
 }
 
 let counter = 0;
@@ -64,10 +72,7 @@ export async function packTestSkill(
       '  tags: sample fixture',
       '---',
       '',
-      `# ${name}`,
-      '',
-      'Follow these steps carefully.',
-      '',
+      opts.body ?? [`# ${name}`, '', 'Follow these steps carefully.', ''].join('\n'),
     ].join('\n'),
   );
   const manifest = [
@@ -78,7 +83,7 @@ export async function packTestSkill(
     ...(opts.manifestExtra ? [opts.manifestExtra] : []),
     '',
   ].join('\n');
-  await writeFile(path.join(dir, 'agenthub.yaml'), manifest);
+  if (!opts.noManifest) await writeFile(path.join(dir, 'agenthub.yaml'), manifest);
   for (const [rel, content] of Object.entries(opts.files ?? {})) {
     await mkdir(path.dirname(path.join(dir, rel)), { recursive: true });
     await writeFile(path.join(dir, rel), content);
