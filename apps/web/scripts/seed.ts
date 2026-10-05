@@ -9,9 +9,16 @@
  * Refuses to run with NODE_ENV=production, or against a hosted database or blob store
  * (DATABASE_URL / BLOB_READ_WRITE_TOKEN), unless AGENTHUB_SEED_FORCE=1.
  */
+import dns from 'node:dns';
 import { appendFileSync, chmodSync, existsSync, mkdirSync, readdirSync } from 'node:fs';
+import net from 'node:net';
 import path from 'node:path';
 import { loadSkillFromDir, packSkill } from '@agenthub/core';
+
+// Networks with broken IPv6 make Node give up on hosted databases before IPv4 answers: try IPv4
+// first and give each address family more time.
+dns.setDefaultResultOrder('ipv4first');
+net.setDefaultAutoSelectFamilyAttemptTimeout(3000);
 import { blobToken, databaseUrl, dataDir } from '../src/config';
 import { describeDatabaseUrl, getDatabase } from '../src/db/client';
 import { isApiError } from '../src/lib/errors';
