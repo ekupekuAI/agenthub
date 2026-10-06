@@ -29,6 +29,39 @@ The examples below use `agenthub` for either.
 VS Code + Copilot), how confident it is about each, the folders each one reads skills from,
 and any problems with existing installs.
 
+### Windows, macOS and Linux
+
+agenthub is tested on all three (Node.js 22 and 24). The commands are the same everywhere;
+only installing Node.js differs.
+
+| | Install Node.js 22+ | Then |
+|---|---|---|
+| **Windows** | Installer from [nodejs.org](https://nodejs.org) | `npm install -g @ekupekuai/agenthub` in PowerShell or Windows Terminal |
+| **macOS** | `brew install node` ([Homebrew](https://brew.sh)), or the installer from nodejs.org | `npm install -g @ekupekuai/agenthub` in Terminal or iTerm2 |
+| **Linux** | Your distribution's Node.js 22+ package, or [nvm](https://github.com/nvm-sh/nvm) | `npm install -g @ekupekuai/agenthub` |
+
+**macOS / Linux: "EACCES: permission denied" during install.** Node.js installed with the
+nodejs.org installer puts global packages in a system folder. Don't use `sudo`; either install
+Node.js with Homebrew or nvm (recommended), or point npm at a folder you own:
+
+```bash
+mkdir -p ~/.npm-global
+npm config set prefix ~/.npm-global
+echo 'export PATH="$HOME/.npm-global/bin:$PATH"' >> ~/.zshrc   # bash: ~/.bashrc
+source ~/.zshrc
+npm install -g @ekupekuai/agenthub
+```
+
+**macOS: let agenthub detect VS Code and Cursor.** Their command-line launchers are not on
+the PATH by default. In VS Code, open the Command Palette (Cmd+Shift+P) and run **Shell
+Command: Install 'code' command in PATH**; in Cursor, run **Shell Command: Install 'cursor'
+command**. Without them, `doctor` still finds the agents from their settings folders, with
+medium confidence.
+
+Skill folders are the same on every system, relative to your home folder (`~`):
+`~/.claude/skills` and `~/.agents/skills` for user-wide installs (`-g`), and
+`.claude/skills` and `.agents/skills` inside a project.
+
 ## 2. Choose where skills come from
 
 The npm package uses the public registry at <https://agenthub-registry.vercel.app> when no

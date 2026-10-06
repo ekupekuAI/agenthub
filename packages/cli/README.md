@@ -10,7 +10,7 @@ update it safely and roll it back.
 
 ## Install
 
-Requires Node.js 22 or newer.
+Works on Windows, macOS and Linux. Requires Node.js 22 or newer (on macOS: `brew install node`).
 
 ```bash
 npm install -g @ekupekuai/agenthub
