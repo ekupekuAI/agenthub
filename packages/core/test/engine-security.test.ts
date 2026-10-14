@@ -7,7 +7,7 @@ import { type ChildProcess, spawn, spawnSync } from 'node:child_process';
 import { lstatSync } from 'node:fs';
 import { cp, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import os, { hostname, tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import {
   AGENT_PATHS,
   duplicateAgents,
@@ -1048,14 +1048,39 @@ describe('home directory', () => {
     await mkdir(work, { recursive: true });
     const spy = vi.spyOn(os, 'homedir').mockReturnValue(realHome);
     try {
-      expect(findProjectRoot(work, { home, agenthubHome: join(home, '.agenthub') })).toBeNull();
+      expectOutside(base, findProjectRoot(work, { home, agenthubHome: join(home, '.agenthub') }));
       await mkdir(join(realHome, '.git'));
-      expect(findProjectRoot(work, { home, agenthubHome: join(home, '.agenthub') })).toBeNull();
+      expectOutside(base, findProjectRoot(work, { home, agenthubHome: join(home, '.agenthub') }));
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('recognises the real OS home under another spelling (8.3 short name, junction, symlink)', async () => {
+    // On Windows %TEMP% is often C:\Users\FIRSTN~1\... while homedir() is C:\Users\First Name.
+    // Walking up from the short spelling must still stop at home, not install into it.
+    const realHome = join(base, 'real-home');
+    const alias = join(base, 'home-alias');
+    await mkdir(join(realHome, '.agenthub'), { recursive: true });
+    await mkdir(join(realHome, 'AppData', 'Local', 'Temp', 'job'), { recursive: true });
+    await symlink(realHome, alias, 'junction');
+    const work = join(alias, 'AppData', 'Local', 'Temp', 'job');
+    const spy = vi.spyOn(os, 'homedir').mockReturnValue(realHome);
+    try {
+      expectOutside(base, findProjectRoot(work, { home, agenthubHome: join(home, '.agenthub') }));
     } finally {
       spy.mockRestore();
     }
   });
 });
+
+/**
+ * The walk may legitimately continue past the test folder (on Windows %TEMP% usually sits inside
+ * the real home, which has its own .agenthub), so only roots inside `base` are wrong.
+ */
+function expectOutside(base: string, root: string | null): void {
+  if (root !== null) expect(relative(base, root).startsWith('..')).toBe(true);
+}
 
 // ---------------------------------------------------------------------------
 // Findings 14 / 26 / 24 / 25

@@ -37,6 +37,15 @@ function samePath(a: string, b: string): boolean {
   return process.platform === 'win32' ? ra.toLowerCase() === rb.toLowerCase() : ra === rb;
 }
 
+/** Real path when it exists (expands Windows 8.3 short names, junctions and symlinks). */
+function realOrResolved(p: string): string {
+  try {
+    return realpathSync.native(p);
+  } catch {
+    return path.resolve(p);
+  }
+}
+
 /**
  * Project root: nearest ancestor of `cwd` containing a `.agenthub` directory, else the nearest
  * ancestor containing `.git` (directory or file), else null.
@@ -54,9 +63,12 @@ export function findProjectRoot(
   // The real OS home is never a project either, even when AGENTHUB_USER_HOME/AGENTHUB_HOME
   // point elsewhere. Otherwise a folder under home without .git resolves to home, and project
   // installs land in the user's global agent folders (~/.claude/skills, ~/.agents/skills).
-  const osHome = os.homedir();
+  // Compared by real path too: %TEMP% is often spelled C:\Users\FIRSTN~1\... on Windows while
+  // homedir() is C:\Users\First Name, and a lexical match alone would miss that it is home.
+  const homes = [os.homedir(), ...(opts.home === undefined ? [] : [opts.home])];
+  const realHomes = homes.map(realOrResolved);
   const isHome = (dir: string) =>
-    samePath(dir, osHome) || (opts.home !== undefined && samePath(dir, opts.home));
+    homes.some((h) => samePath(dir, h)) || realHomes.some((h) => samePath(realOrResolved(dir), h));
   for (let current = start; ; current = path.dirname(current)) {
     const candidate = path.join(current, STATE_DIR);
     const isMachineState =
