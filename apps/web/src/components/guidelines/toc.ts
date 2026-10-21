@@ -14,6 +14,17 @@ export interface TocSection extends TocEntry {
 
 export const TOC = [
   {
+    id: 'setup',
+    label: 'Set up on a new computer',
+    children: [
+      { id: 'install-node', label: '1. Install Node.js' },
+      { id: 'install-agenthub', label: '2. Install agenthub' },
+      { id: 'first-run', label: '3. Run it in your project' },
+      { id: 'another-computer', label: 'Move to another computer' },
+      { id: 'update-uninstall', label: 'Update or uninstall agenthub' },
+    ],
+  },
+  {
     id: 'quick-start',
     label: 'Quick start',
     children: [
@@ -74,6 +85,8 @@ export const TOC = [
     children: [
       { id: 'agent-does-not-show-skill', label: 'The agent does not show the skill' },
       { id: 'verify-reports-drift', label: 'verify reports drift' },
+      { id: 'command-not-found', label: 'agenthub: command not found' },
+      { id: 'cannot-reach-registry', label: 'Cannot reach the registry' },
       { id: 'windows-file-locks', label: 'Windows file locks' },
     ],
   },

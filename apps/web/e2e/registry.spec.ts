@@ -31,13 +31,14 @@ test('skill page shows the install command and trust evidence', async ({ page })
 test('guidelines page has every section and a working table of contents', async ({ page }) => {
   await page.goto('/guidelines');
   for (const name of [
-    '1. Quick start',
-    '2. Installing safely',
-    '3. Writing a safe skill',
-    '4. Publishing rules',
-    '5. Security model',
-    '6. Reporting a malicious skill or vulnerability',
-    '7. Troubleshooting',
+    '1. Set up on a new computer',
+    '2. Quick start',
+    '3. Installing safely',
+    '4. Writing a safe skill',
+    '5. Publishing rules',
+    '6. Security model',
+    '7. Reporting a malicious skill or vulnerability',
+    '8. Troubleshooting',
   ]) {
     await expect(page.getByRole('heading', { level: 2, name })).toBeVisible();
   }

@@ -98,7 +98,7 @@ export default function GuidelinesPage() {
       <PageHeader
         eyebrow="Field guide"
         title="Guidelines"
-        lede="How to install skills safely, write one others can trust, and what the registry does and does not promise."
+        lede="How to set agenthub up on any computer, install skills safely, write one others can trust, and what the registry does and does not promise."
       >
         <p className="flex flex-wrap gap-x-5 gap-y-2 font-mono text-[0.75rem] text-subtle">
           <span>{TOC.length} sections</span>
@@ -127,6 +127,120 @@ export default function GuidelinesPage() {
           <TocMobile className="lg:hidden" />
 
           <article className="min-w-0 max-w-reading pt-10 lg:pt-12">
+            {/* 0 ------------------------------------------------------------------ */}
+            <DocSection id="setup">
+              <Prose>
+                <p>
+                  agenthub is a command-line tool. It works the same on Windows, macOS and Linux,
+                  and this website needs no setup at all. Do these three steps once on each computer
+                  where you use an AI coding agent.
+                </p>
+              </Prose>
+
+              <DocSubheading id="install-node" />
+              <Prose>
+                <p>
+                  agenthub runs on Node.js 22 or newer. Check what you have with{' '}
+                  <code>node --version</code>; if it prints v22 or higher, skip to step 2.
+                </p>
+              </Prose>
+              <CommandList
+                items={[
+                  {
+                    command: 'winget install OpenJS.NodeJS.LTS',
+                    note: 'Windows (or download the LTS installer from nodejs.org). Open a new terminal afterwards.',
+                  },
+                  { command: 'brew install node', note: 'macOS with Homebrew.' },
+                  {
+                    command: 'nvm install --lts',
+                    note: 'Linux or macOS with nvm, or use the Node.js package for your distribution.',
+                  },
+                ]}
+              />
+
+              <DocSubheading id="install-agenthub" />
+              <CommandList
+                items={[
+                  {
+                    command: 'npm install -g @ekupekuai/agenthub',
+                    note: 'Installs the agenthub command for your user.',
+                  },
+                  { command: 'agenthub --version', note: 'Prints the installed version.' },
+                ]}
+              />
+              <Prose>
+                <p>
+                  It talks to the public registry at{' '}
+                  <code>https://agenthub-registry.vercel.app</code> out of the box, so there is
+                  nothing to configure. agenthub never runs code from a skill: it only copies files
+                  after showing you what it found.
+                </p>
+              </Prose>
+
+              <DocSubheading id="first-run" />
+              <CommandList
+                items={[
+                  {
+                    command: 'cd path/to/your-project',
+                    note: 'Skills are installed per project by default.',
+                  },
+                  {
+                    command: 'agenthub doctor',
+                    note: 'Shows which agents it found (Claude Code, Codex, Cursor, VS Code). Changes nothing.',
+                  },
+                  {
+                    command: 'agenthub install web-testing',
+                    note: 'Shows the plan and the safety report, then asks before writing.',
+                  },
+                  { command: 'agenthub', note: 'Opens the full-screen app; press / for commands.' },
+                ]}
+              />
+              <Prose>
+                <p>
+                  Then reload your agent (see{' '}
+                  <a href="#agent-does-not-show-skill">The agent does not show the skill</a>). The
+                  agent uses the skill by itself when you ask for that kind of task.
+                </p>
+              </Prose>
+
+              <DocSubheading id="another-computer" />
+              <Prose>
+                <p>
+                  Commit <code>.agenthub/agenthub.lock</code> with your project. On the other
+                  computer, do steps 1 and 2, clone the project, and run:
+                </p>
+              </Prose>
+              <CommandList
+                items={[
+                  {
+                    command: 'agenthub install',
+                    note: 'With no name, restores every skill in the lockfile at the exact recorded version and digest.',
+                  },
+                  {
+                    command: 'agenthub verify',
+                    note: 'Re-hashes the files and confirms they match the lock.',
+                  },
+                ]}
+              />
+              <Prose>
+                <p>
+                  Skills installed with <code>-g</code> live in your user folder, not in the
+                  project, so install them again on each computer.
+                </p>
+              </Prose>
+
+              <DocSubheading id="update-uninstall" />
+              <CommandList
+                items={[
+                  { command: 'npm update -g @ekupekuai/agenthub', note: 'Update agenthub itself.' },
+                  {
+                    command: 'npm uninstall -g @ekupekuai/agenthub',
+                    note: 'Remove agenthub. Installed skills stay where they are; run agenthub remove <skill> first to delete them.',
+                  },
+                ]}
+              />
+            </DocSection>
+
             {/* 1 ------------------------------------------------------------------ */}
             <DocSection id="quick-start">
               <Prose>
@@ -150,11 +264,17 @@ export default function GuidelinesPage() {
               </Prose>
 
               <DocSubheading id="choose-a-registry" />
+              <Prose>
+                <p>
+                  The default is the public registry,{' '}
+                  <code>https://agenthub-registry.vercel.app</code>. Change it only to use your own:
+                </p>
+              </Prose>
               <CommandList
                 items={[
                   {
-                    command: 'agenthub config set registry http://localhost:3000',
-                    note: 'A hosted registry, such as one running from the agenthub repository.',
+                    command: 'agenthub config set registry https://registry.example.com',
+                    note: 'Your own hosted registry, such as one deployed from the agenthub repository.',
                   },
                   {
                     command: 'agenthub config set registry file:../my-skills',
@@ -163,7 +283,10 @@ export default function GuidelinesPage() {
                 ]}
               />
               <Prose>
-                <p>You can also skip the registry and install straight from a folder or a file.</p>
+                <p>
+                  <code>agenthub config unset registry</code> goes back to the public registry. You
+                  can also skip the registry and install straight from a folder or a file.
+                </p>
               </Prose>
 
               <DocSubheading id="find-and-inspect" />
@@ -735,6 +858,39 @@ export default function GuidelinesPage() {
                   <li>
                     <em>extra</em> files are not part of the package; they are kept on remove and
                     reported.
+                  </li>
+                </ul>
+              </Prose>
+
+              <DocSubheading id="command-not-found" />
+              <Prose>
+                <ul>
+                  <li>
+                    Open a new terminal after installing Node.js or agenthub, so it picks up the
+                    updated <code>PATH</code>.
+                  </li>
+                  <li>
+                    <code>npm prefix -g</code> shows where global commands go; that folder (its{' '}
+                    <code>bin</code> folder on macOS and Linux) must be on your <code>PATH</code>.
+                  </li>
+                  <li>
+                    Windows PowerShell may refuse to run scripts. Use Command Prompt, or run{' '}
+                    <code>agenthub.cmd</code> instead of <code>agenthub</code>.
+                  </li>
+                  <li>
+                    &ldquo;Permission denied&rdquo; during <code>npm install -g</code> on macOS or
+                    Linux: install Node.js with Homebrew or nvm rather than using <code>sudo</code>.
+                  </li>
+                </ul>
+              </Prose>
+
+              <DocSubheading id="cannot-reach-registry" />
+              <Prose>
+                <ul>
+                  <li>A one-off timeout is usually the network: run the command again.</li>
+                  <li>
+                    <code>agenthub config get registry</code> shows which registry is in use;{' '}
+                    <code>agenthub config unset registry</code> returns to the public one.
                   </li>
                 </ul>
               </Prose>
