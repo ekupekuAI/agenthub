@@ -3,6 +3,7 @@ import localFont from 'next/font/local';
 import { cookies, headers } from 'next/headers';
 import type { ReactNode } from 'react';
 import { MotionProvider } from '../src/components/ui/MotionProvider';
+import { RouteFold } from '../src/components/ui/RouteFold';
 import { SiteFooter } from '../src/components/ui/SiteFooter';
 import { SiteHeader } from '../src/components/ui/SiteHeader';
 import { SkipLink } from '../src/components/ui/SkipLink';
@@ -132,6 +133,7 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
             {children}
           </main>
           <SiteFooter securityContact={contact} />
+          <RouteFold />
         </MotionProvider>
       </body>
     </html>
