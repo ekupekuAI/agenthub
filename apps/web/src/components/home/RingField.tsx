@@ -29,8 +29,8 @@ const RING_EDGE = 4;
 
 /** Brand palettes: signal lime fading into the page ink (dark) or into deep olive (light). */
 const PALETTES = {
-  dark: ['#C5F04A', '#6E8F22', '#16191D'],
-  light: ['#3F6212', '#6E8F22', '#C9D9A1'],
+  dark: ['#E2FA9A', '#C5F04A', '#7FA62A'],
+  light: ['#2F4A0C', '#3F6212', '#6E8F22'],
 } as const;
 
 const NOISE = `
@@ -214,6 +214,7 @@ uniform vec3  uColors[${MAX_COLORS}];
 uniform int   uColorCount;
 uniform vec2  uRingPos;
 uniform float uTime;
+uniform float uGain;
 ${NOISE}
 float sdRoundBox(in vec2 p, in vec2 b, in float r){
     vec2 q = abs(p) - b + r;
@@ -246,7 +247,7 @@ void main(){
     float a = mask * smoothstep(0.1, 0.2, vScale);
     if (a < 0.01) discard;
     color = clamp(color, 0.0, 1.0);
-    color *= clamp(vEnergy, 0.0, 1.0);
+    color *= clamp(vEnergy * uGain, 0.0, 1.0);
     gl_FragColor = vec4(color, clamp(a, 0.0, 1.0));
 }
 `;
@@ -498,10 +499,10 @@ function startRingField(canvas: HTMLCanvasElement): (() => void) | undefined {
 
   const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   const small = window.matchMedia('(max-width: 767px)').matches;
-  // Fewer points on phones: density 300 ≈ 50k points, 170 ≈ 12k.
-  const density = small ? 170 : 300;
+  // Slightly fewer points on phones: density 300 ≈ 50k points, 250 ≈ 28k.
+  const density = small ? 250 : 300;
   const settings = {
-    dotSize: 1.2,
+    dotSize: 1.8,
     speed: 6 / 50,
     camDist: 1.6,
     ringRadius: 0.12,
@@ -538,6 +539,7 @@ function startRingField(canvas: HTMLCanvasElement): (() => void) | undefined {
       'uColorCount',
       'uRingPos',
       'uTime',
+      'uGain',
     ];
     if (useSim) names.push('uState');
     else names.push('uRingRadius', 'uRingWidth', 'uRingWidth2', 'uTurb');
@@ -605,6 +607,7 @@ function startRingField(canvas: HTMLCanvasElement): (() => void) | undefined {
         'uColorCount',
         'uRingPos',
         'uTime',
+        'uGain',
         'uRingRadius',
         'uRingWidth',
         'uRingWidth2',
@@ -678,17 +681,20 @@ function startRingField(canvas: HTMLCanvasElement): (() => void) | undefined {
     wander += dt * settings.speed;
 
     const aspect = Math.max(cssW / Math.max(cssH, 1), 0.0001);
+    // Tall (phone) layouts: pull the camera back so the width shows as much field as a square.
+    const camDist = settings.camDist / Math.min(aspect, 1);
     const projF = 1 / Math.tan((FOV * Math.PI) / 180 / 2);
     const wx = (valueNoise1(wander * 0.66, 94.234) - 0.5) * 2;
     const wy = (valueNoise1(wander * 0.75, 21.028) - 0.5) * 2;
     follow += ((pointer.over ? 1 : 0) - follow) * (1 - (1 - HANDOVER_LERP) ** (dt * 60));
-    const wanderX = wx * 0.2;
+    // Keep the wandering ring inside narrow (portrait) frames.
+    const wanderX = wx * 0.2 * Math.min(1, aspect / 1.8);
     const wanderY = wy * 0.1;
     let tx = wanderX;
     let ty = wanderY;
     if (follow > 0.0001) {
-      const worldX = (pointer.x * aspect * settings.camDist) / projF;
-      const worldY = (pointer.y * settings.camDist) / projF;
+      const worldX = (pointer.x * aspect * camDist) / projF;
+      const worldY = (pointer.y * camDist) / projF;
       const cx = worldX * CURSOR_REACH + wx * CURSOR_JITTER;
       const cy = worldY * CURSOR_REACH + wy * CURSOR_JITTER;
       tx = wanderX + (cx - wanderX) * follow;
@@ -756,12 +762,16 @@ function startRingField(canvas: HTMLCanvasElement): (() => void) | undefined {
     }
     gl.uniform1f(u.uProjF ?? null, projF);
     gl.uniform1f(u.uAspect ?? null, aspect);
-    gl.uniform1f(u.uCamDist ?? null, settings.camDist);
-    gl.uniform1f(u.uPointScale ?? null, (cssW / 2000) * settings.dotSize * dpr * 0.5);
+    gl.uniform1f(u.uCamDist ?? null, camDist);
+    gl.uniform1f(
+      u.uPointScale ?? null,
+      (Math.max(cssW, 720) / 2000) * settings.dotSize * dpr * 0.5,
+    );
     gl.uniform3fv(u['uColors[0]'] ?? null, palette);
     gl.uniform1i(u.uColorCount ?? null, colorCount);
     gl.uniform2f(u.uRingPos ?? null, ringPos.x, ringPos.y);
     gl.uniform1f(u.uTime ?? null, simTime);
+    gl.uniform1f(u.uGain ?? null, 1.9);
     gl.drawArrays(gl.POINTS, 0, count);
   }
 

@@ -14,7 +14,7 @@ import { RingField } from './RingField';
 export function HomeHero() {
   return (
     <section aria-labelledby="hero-title" className="dot-grid relative overflow-hidden">
-      <RingField className="absolute inset-0 opacity-80 [mask-image:radial-gradient(ellipse_70%_75%_at_55%_50%,black_35%,transparent_80%)]" />
+      <RingField className="absolute inset-0 max-md:opacity-60 [mask-image:radial-gradient(ellipse_85%_90%_at_55%_50%,black_45%,transparent_88%)]" />
       <Container
         width="wide"
         className="relative grid items-center gap-12 pt-12 pb-14 sm:pt-16 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.05fr)] lg:gap-16 lg:pt-24 lg:pb-20"

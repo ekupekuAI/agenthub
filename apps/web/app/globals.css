@@ -447,6 +447,39 @@ html[data-theme="light"] {
   }
 }
 
+/*
+ * Soft colored light behind a section so long pages do not read as flat ink. Two glows:
+ * --ambient-a at (--ambient-x, --ambient-y) and --ambient-b at (--ambient-x2, --ambient-y2),
+ * mixed in at --ambient-k. Decorative; the section becomes a stacking context.
+ */
+@utility ambient {
+  position: relative;
+  isolation: isolate;
+
+  &::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    pointer-events: none;
+    background:
+      radial-gradient(
+        ellipse 55% 65% at var(--ambient-x, 12%) var(--ambient-y, 18%),
+        color-mix(in oklab, var(--ambient-a, var(--signal)) var(--ambient-k, 15%), transparent),
+        transparent 72%
+      ),
+      radial-gradient(
+        ellipse 50% 60% at var(--ambient-x2, 88%) var(--ambient-y2, 85%),
+        color-mix(
+          in oklab,
+          var(--ambient-b, var(--info)) calc(var(--ambient-k, 15%) * 0.75),
+          transparent
+        ),
+        transparent 72%
+      );
+  }
+}
+
 /* Dotted leader between a label and its value (receipt rows). */
 @utility leader {
   flex: 1 1 1.5rem;

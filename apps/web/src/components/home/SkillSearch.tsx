@@ -102,7 +102,7 @@ export function SkillSearch({
   const named = categories.filter((c) => Boolean(c.category));
 
   return (
-    <section id="skills" aria-labelledby="skills-heading" className="py-14 lg:py-24">
+    <section id="skills" aria-labelledby="skills-heading" className="ambient py-14 lg:py-24">
       <Container>
         <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
           <div className="max-w-2xl">

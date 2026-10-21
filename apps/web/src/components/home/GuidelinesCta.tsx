@@ -3,7 +3,10 @@ import { ArrowRightIcon, BookOpenIcon, Button, Container, Reveal, Seal } from '.
 /** Closing band: read the rules before installing or publishing. */
 export function GuidelinesCta() {
   return (
-    <section aria-labelledby="cta-heading" className="pt-4 pb-14 lg:pb-24">
+    <section
+      aria-labelledby="cta-heading"
+      className="ambient pt-4 pb-14 [--ambient-x:50%] [--ambient-y:90%] [--ambient-k:12%] lg:pb-24"
+    >
       <Container>
         <Reveal>
           <div className="relative overflow-hidden rounded-panel border border-border-strong bg-surface-1 p-6 shadow-panel sm:p-10 lg:p-12">

@@ -1,3 +1,4 @@
+import { BrandShowcase } from '../src/components/home/BrandShowcase';
 import { CompatibilityMap } from '../src/components/home/CompatibilityMap';
 import { FeatureBento } from '../src/components/home/FeatureBento';
 import { GuidelinesCta } from '../src/components/home/GuidelinesCta';
@@ -49,6 +50,7 @@ export default async function HomePage({ searchParams }: { searchParams: SearchP
       <FeatureBento />
       <CompatibilityMap />
       <HowItWorks />
+      <BrandShowcase />
       <GuidelinesCta />
     </>
   );

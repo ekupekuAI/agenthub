@@ -336,7 +336,10 @@ function ImmutableArtifact() {
 /** Six spotlight cards in an asymmetric grid, each carrying a real artifact. */
 export function FeatureBento() {
   return (
-    <section aria-labelledby="features-heading" className="border-border border-t py-14 lg:py-24">
+    <section
+      aria-labelledby="features-heading"
+      className="ambient border-border border-t py-14 [--ambient-a:var(--info)] [--ambient-b:var(--signal)] [--ambient-x:85%] [--ambient-x2:10%] [--ambient-y2:75%] lg:py-24"
+    >
       <Container>
         <div className="max-w-2xl">
           <Eyebrow className="mb-3">Trust layer</Eyebrow>

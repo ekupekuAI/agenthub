@@ -26,7 +26,10 @@ const STEPS: { name: string; body: string; detail: string }[] = [
 /** Detect → Scan → Install → Verify. */
 export function HowItWorks() {
   return (
-    <section aria-labelledby="how-heading" className="border-border border-t py-14 lg:py-24">
+    <section
+      aria-labelledby="how-heading"
+      className="ambient border-border border-t py-14 [--ambient-a:var(--info)] [--ambient-x:20%] [--ambient-y:70%] [--ambient-b:var(--signal)] [--ambient-x2:85%] [--ambient-y2:20%] lg:py-24"
+    >
       <Container>
         <div className="max-w-2xl">
           <Eyebrow className="mb-3">How it works</Eyebrow>

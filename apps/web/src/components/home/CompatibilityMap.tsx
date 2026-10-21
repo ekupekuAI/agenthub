@@ -114,7 +114,10 @@ function MapDiagram() {
 /** Home compatibility map: four agents, two skills folders, lines for who reads what. */
 export function CompatibilityMap() {
   return (
-    <section aria-labelledby="compat-heading" className="border-border border-t py-14 lg:py-24">
+    <section
+      aria-labelledby="compat-heading"
+      className="ambient border-border border-t py-14 [--ambient-x:50%] [--ambient-y:55%] [--ambient-k:9%] lg:py-24"
+    >
       <Container className="grid items-center gap-10 lg:grid-cols-[minmax(0,0.85fr)_minmax(0,1fr)] lg:gap-16">
         <div className="min-w-0">
           <Eyebrow className="mb-3">Compatibility</Eyebrow>
