@@ -149,9 +149,13 @@ test('publish form uploads through the server action and reports conflicts', asy
 
 test('Ctrl+K opens the command palette and finds a seeded skill', async ({ page }) => {
   await page.goto('/guidelines');
-  await page.keyboard.press('Control+k');
   const input = page.getByRole('combobox', { name: 'Search skills' });
-  await expect(input).toBeFocused();
+  // The shortcut is attached on hydration, which can land just after "load": press again only
+  // while the palette is still closed (Ctrl+K toggles it).
+  await expect(async () => {
+    if (!(await input.isVisible())) await page.keyboard.press('Control+k');
+    await expect(input).toBeFocused({ timeout: 1000 });
+  }).toPass({ timeout: 10_000 });
   await input.fill('changelog');
   const option = page
     .getByRole('listbox', { name: 'Results' })
