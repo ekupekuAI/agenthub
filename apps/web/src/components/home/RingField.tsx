@@ -11,6 +11,7 @@
  */
 
 import { useEffect, useRef } from 'react';
+import { prefersLightEffects } from '../../lib/device';
 
 const FIELD = 500;
 const HALF = FIELD / 2;
@@ -307,7 +308,7 @@ function makeContext(canvas: HTMLCanvasElement): { gl: GL; fmt: TexFormat | null
     premultipliedAlpha: false,
     depth: false,
     stencil: false,
-    powerPreference: 'high-performance',
+    powerPreference: 'low-power',
     preserveDrawingBuffer: false,
   };
   const gl2 = canvas.getContext('webgl2', opts);
@@ -497,10 +498,11 @@ function startRingField(canvas: HTMLCanvasElement): (() => void) | undefined {
   const { gl, fmt } = ctx;
   const useSim = fmt !== null;
 
-  const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  // Low-end devices and reduced motion get one settled still frame instead of a loop.
+  const lite = prefersLightEffects();
   const small = window.matchMedia('(max-width: 767px)').matches;
   // Slightly fewer points on phones: density 300 ≈ 50k points, 250 ≈ 28k.
-  const density = small ? 250 : 300;
+  const density = lite ? 170 : small ? 250 : 300;
   const settings = {
     dotSize: 1.8,
     speed: 6 / 50,
@@ -622,7 +624,7 @@ function startRingField(canvas: HTMLCanvasElement): (() => void) | undefined {
   let cssW = 1;
   let cssH = 1;
   const resize = () => {
-    dpr = Math.min(window.devicePixelRatio || 1, DPR_CAP);
+    dpr = Math.min(window.devicePixelRatio || 1, lite ? 1 : DPR_CAP);
     cssW = Math.max(canvas.clientWidth, 1);
     cssH = Math.max(canvas.clientHeight, 1);
     const w = Math.max(1, Math.round(cssW * dpr));
@@ -635,7 +637,7 @@ function startRingField(canvas: HTMLCanvasElement): (() => void) | undefined {
   resize();
   const ro = new ResizeObserver(() => {
     resize();
-    if (reducedMotion) drawFrame(performance.now());
+    if (lite) drawFrame(performance.now());
   });
   ro.observe(canvas);
 
@@ -648,12 +650,12 @@ function startRingField(canvas: HTMLCanvasElement): (() => void) | undefined {
     pointer.y = -(((e.clientY - r.top) / Math.max(r.height, 1)) * 2 - 1);
     pointer.over = pointer.x >= -1 && pointer.x <= 1 && pointer.y >= -1 && pointer.y <= 1;
   };
-  if (!reducedMotion) window.addEventListener('pointermove', onMove, { passive: true });
+  if (!lite) window.addEventListener('pointermove', onMove, { passive: true });
 
   const themeObserver = new MutationObserver(() => {
     palette = flatPalette(PALETTES[currentTheme()]);
     colorCount = PALETTES[currentTheme()].length;
-    if (reducedMotion) drawFrame(performance.now());
+    if (lite) drawFrame(performance.now());
   });
   themeObserver.observe(document.documentElement, {
     attributes: true,
@@ -783,7 +785,7 @@ function startRingField(canvas: HTMLCanvasElement): (() => void) | undefined {
     raf = requestAnimationFrame(loop);
   };
   const start = () => {
-    if (reducedMotion) return;
+    if (lite) return;
     if (!raf) {
       last = 0;
       raf = requestAnimationFrame(loop);
@@ -799,7 +801,7 @@ function startRingField(canvas: HTMLCanvasElement): (() => void) | undefined {
   };
   document.addEventListener('visibilitychange', onVisibility);
 
-  if (reducedMotion) {
+  if (lite) {
     // A settled still frame: run the simulation briefly off-screen, then draw once.
     for (let i = 0; i < 90; i++) drawFrame(i * (1000 / 60));
   } else {

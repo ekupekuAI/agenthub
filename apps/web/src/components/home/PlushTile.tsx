@@ -12,6 +12,7 @@
  */
 
 import { useEffect, useRef, useState } from 'react';
+import { prefersLightEffects } from '../../lib/device';
 
 type RGBA = [number, number, number, number];
 
@@ -652,6 +653,11 @@ function startPlush(
   canvas: HTMLCanvasElement,
   onRestore: () => void,
 ): (() => void) | undefined {
+  // Tens of thousands of strands are too much for low-end GPUs: show the flat seal there.
+  if (prefersLightEffects()) {
+    canvas.style.display = 'none';
+    return;
+  }
   const maybe = canvas.getContext('webgl2', {
     alpha: false,
     antialias: false,
@@ -938,7 +944,8 @@ function startPlush(
       Math.abs(tBw - sm.bw) > 4e-3 ||
       Math.abs(tYaw - sm.yaw) + Math.abs(tPitch - sm.pitch) > 1e-4;
 
-    const gap = active ? 15 : 31;
+    // Idle breeze at ~20 fps; full rate only while the pointer is brushing the fur.
+    const gap = active ? 15 : 48;
     if (lastDraw >= 0 && now - lastDraw < gap) {
       wake();
       return;

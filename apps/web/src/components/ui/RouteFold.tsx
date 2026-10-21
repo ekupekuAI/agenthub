@@ -13,12 +13,14 @@
 
 import { usePathname } from 'next/navigation';
 import { useEffect, useRef } from 'react';
+import { prefersLightEffects } from '../../lib/device';
 import { THEME_COLORS } from './theme';
 
 const MIURA_GAMMA = (65 * Math.PI) / 180;
-const PLAY_S = 1.1;
-const FADE_S = 0.28;
-const ARRIVE_TIMEOUT_S = 4;
+const PLAY_S = 0.7;
+const FADE_S = 0.2;
+// The new page shows its loading state right away, so never hold the sheet long.
+const ARRIVE_TIMEOUT_S = 0.6;
 const THETA_MAX = (84 * Math.PI) / 180;
 const FOV = (30 * Math.PI) / 180;
 const FLOATS = 8;
@@ -334,6 +336,7 @@ function createEngine(wrapper: HTMLDivElement, canvas: HTMLCanvasElement): Engin
   let running = false;
   let backdrop: [number, number, number] = [0, 0, 0];
   let safety = 0;
+  let fonts: { display: string; mono: string } | undefined;
 
   const hide = () => {
     running = false;
@@ -546,13 +549,15 @@ function createEngine(wrapper: HTMLDivElement, canvas: HTMLCanvasElement): Engin
         document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
       W = window.innerWidth;
       H = window.innerHeight;
-      dpr = Math.min(window.devicePixelRatio || 1, 2);
+      // The sheet is always moving: 1.5x is sharp enough and keeps texture uploads small.
+      dpr = Math.min(window.devicePixelRatio || 1, 1.5);
       canvas.width = Math.max(1, Math.round(W * dpr));
       canvas.height = Math.max(1, Math.round(H * dpr));
       const bg = THEME_COLORS[theme];
       const n = Number.parseInt(bg.slice(1), 16);
       backdrop = [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255];
-      const fonts = pageFonts();
+      if (!fonts) fonts = pageFonts();
+      const sheetFonts = fonts;
       const sheets = SHEETS[theme];
       const specs: [Sheet, string, string][] = [
         [sheets.from, 'Leaving', routeLabel(from)],
@@ -564,7 +569,7 @@ function createEngine(wrapper: HTMLDivElement, canvas: HTMLCanvasElement): Engin
         if (!page || !ctx) return;
         page.width = canvas.width;
         page.height = canvas.height;
-        drawSheet(ctx, W, H, dpr, sheet, caption, title, fonts);
+        drawSheet(ctx, W, H, dpr, sheet, caption, title, sheetFonts);
         gl.activeTexture(gl.TEXTURE0 + i);
         gl.bindTexture(gl.TEXTURE_2D, texs[i] ?? null);
         gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true);
@@ -609,8 +614,16 @@ export function RouteFold() {
     const wrapper = wrapperRef.current;
     const canvas = canvasRef.current;
     if (!wrapper || !canvas) return;
-    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    // Off for reduced motion and on low-end devices: navigation must feel instant there.
+    if (prefersLightEffects()) return;
     let engine: Engine | null | undefined;
+    // Prepare shaders while the browser is idle so the first click does not stall.
+    const warm = () => {
+      if (engine === undefined) engine = createEngine(wrapper, canvas);
+    };
+    const idle = window.requestIdleCallback
+      ? window.requestIdleCallback(warm, { timeout: 3000 })
+      : window.setTimeout(warm, 1500);
 
     const onClick = (e: MouseEvent) => {
       if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
@@ -622,8 +635,7 @@ export function RouteFold() {
       if (url.origin !== window.location.origin) return;
       if (url.pathname.startsWith('/api/')) return;
       if (url.pathname === window.location.pathname) return;
-      // Created on first use so pages that never navigate pay nothing.
-      if (engine === undefined) engine = createEngine(wrapper, canvas);
+      warm();
       engine?.start(window.location.pathname, url.pathname);
     };
     document.addEventListener('click', onClick, true);
@@ -633,6 +645,8 @@ export function RouteFold() {
       dispose: () => {},
     };
     return () => {
+      if (window.cancelIdleCallback) window.cancelIdleCallback(idle);
+      else window.clearTimeout(idle);
       document.removeEventListener('click', onClick, true);
       engine?.dispose();
       engineRef.current = null;

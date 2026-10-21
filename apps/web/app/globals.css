@@ -221,6 +221,7 @@ html[data-theme="light"] {
   --animate-cursor: terminal-cursor 1.1s steps(1, end) infinite;
   --animate-skeleton: skeleton-pulse 1.6s ease-in-out infinite;
   --animate-spinner: spinner-rotate 0.8s linear infinite;
+  --animate-route-progress: route-progress 1.1s var(--ease-out-quart) infinite;
 
   @keyframes terminal-cursor {
     0%,
@@ -236,6 +237,15 @@ html[data-theme="light"] {
   @keyframes spinner-rotate {
     to {
       transform: rotate(360deg);
+    }
+  }
+
+  @keyframes route-progress {
+    from {
+      transform: translateX(-100%);
+    }
+    to {
+      transform: translateX(260%);
     }
   }
 
