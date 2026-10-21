@@ -3,16 +3,17 @@
 /**
  * Plush tile — adapted from "Plush Tile" by Originkit.
  *
- * The agenthub app icon (lime seal on an ink tile) rendered as a furry cushion: strands are
+ * The agenthub app icon (the lime A-check on an ink tile) rendered as a furry cushion: strands are
  * generated on the GPU with transform feedback, lit by a soft key light, and brushed by the
- * pointer. Adaptations for this site: the artwork is the agenthub seal drawn locally (no
+ * pointer. Adaptations for this site: the artwork is the agenthub logo drawn locally (no
  * remote image), fixed brand settings, decorative only, pauses off-screen and in hidden tabs,
  * holds still for reduced motion, and recovers from a lost WebGL context. Without WebGL2 the
- * flat seal underneath stays visible.
+ * flat logo underneath stays visible.
  */
 
 import { useEffect, useRef, useState } from 'react';
 import { prefersLightEffects } from '../../lib/device';
+import { LOGO_CHECK_PATH, LOGO_LEGS_PATH } from '../ui/Logo';
 
 type RGBA = [number, number, number, number];
 
@@ -24,14 +25,16 @@ function hex(h: string): RGBA {
   return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255, 1];
 }
 
-/** Brand settings: ink fur with the lime seal, an olive-tinted stage, warm-white key light. */
+/** Brand settings: ink fur with the lime A-check, an olive-tinted stage, warm-white key light. */
 const SETTINGS = {
   background: hex('#1C2610'),
   fur: hex('#2A2F37'),
   light: hex('#FFF4E6'),
-  seal: '#C5F04A',
-  check: '#0B0C0E',
-  artSize: 80,
+  mark: '#C5F04A',
+  // A paler lime keeps the check readable once the fur blurs its edges.
+  check: '#ECFBB8',
+  // The mark spans about half of the 24px grid, so the grid is drawn larger than the tile.
+  artSize: 118,
   scale: 100,
   radius: 48,
   puff: 5,
@@ -67,11 +70,6 @@ const SETTINGS = {
   glow: 60,
   shadow: 50,
 };
-
-/** The agenthub seal on a 24px grid (same paths as components/ui/Seal). */
-const SEAL_PATH =
-  'M12 2.8A2.6 2.6 0 0 1 16.6 4.03A2.6 2.6 0 0 1 19.97 7.4A2.6 2.6 0 0 1 21.2 12A2.6 2.6 0 0 1 19.97 16.6A2.6 2.6 0 0 1 16.6 19.97A2.6 2.6 0 0 1 12 21.2A2.6 2.6 0 0 1 7.4 19.97A2.6 2.6 0 0 1 4.03 16.6A2.6 2.6 0 0 1 2.8 12A2.6 2.6 0 0 1 4.03 7.4A2.6 2.6 0 0 1 7.4 4.03A2.6 2.6 0 0 1 12 2.8Z';
-const CHECK_PATH = 'M8.3 12.2L10.8 14.7L15.7 9.6';
 
 const TILE_HALF = 0.7;
 const HORIZON = -0.74;
@@ -429,7 +427,7 @@ void main() {
     o = vec4(vCol.rgb * glint, vCol.a) * cov;
 }`;
 
-/** Paints the fur albedo: ink base with the agenthub seal centred on it. */
+/** Paints the fur albedo: ink base with the agenthub A-check centred on it. */
 function paintArt(ctx: CanvasRenderingContext2D) {
   const S = ART;
   const fur = SETTINGS.fur;
@@ -439,13 +437,15 @@ function paintArt(ctx: CanvasRenderingContext2D) {
   const box = (S * SETTINGS.artSize) / 100;
   const k = box / 24;
   ctx.setTransform(k, 0, 0, k, (S - box) / 2, (S - box) / 2);
-  ctx.fillStyle = SETTINGS.seal;
-  ctx.fill(new Path2D(SEAL_PATH));
-  ctx.strokeStyle = SETTINGS.check;
-  ctx.lineWidth = 2.2;
+  ctx.strokeStyle = SETTINGS.mark;
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
-  ctx.stroke(new Path2D(CHECK_PATH));
+  // Slightly bolder than the flat logo so the shape survives the fur.
+  ctx.lineWidth = 3.2;
+  ctx.stroke(new Path2D(LOGO_LEGS_PATH));
+  ctx.lineWidth = 2.4;
+  ctx.strokeStyle = SETTINGS.check;
+  ctx.stroke(new Path2D(LOGO_CHECK_PATH));
   ctx.setTransform(1, 0, 0, 1, 0, 0);
 }
 
@@ -653,7 +653,7 @@ function startPlush(
   canvas: HTMLCanvasElement,
   onRestore: () => void,
 ): (() => void) | undefined {
-  // Tens of thousands of strands are too much for low-end GPUs: show the flat seal there.
+  // Tens of thousands of strands are too much for low-end GPUs: show the flat logo there.
   if (prefersLightEffects()) {
     canvas.style.display = 'none';
     return;
@@ -704,7 +704,7 @@ function startPlush(
     prepProg = build(PREP_VERT, PREP_FRAG, ['oA', 'oB', 'oC', 'oD']);
     strandProg = build(STRAND_VERT, STRAND_FRAG);
   } catch {
-    // Decorative only: hide the canvas so the flat seal underneath shows instead.
+    // Decorative only: hide the canvas so the flat logo underneath shows instead.
     canvas.style.display = 'none';
     return;
   }
@@ -1253,7 +1253,7 @@ function startPlush(
 
 export interface PlushTileProps {
   className?: string;
-  /** Shown when WebGL2 is unavailable: usually the flat seal. */
+  /** Shown when WebGL2 is unavailable: usually the flat logo. */
   fallback?: React.ReactNode;
 }
 

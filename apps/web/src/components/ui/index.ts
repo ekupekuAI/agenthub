@@ -58,6 +58,7 @@ export {
 export { Input, type InputProps, TextField, type TextFieldProps } from './Input';
 export * from './icons';
 export { Kbd, type KbdProps } from './Kbd';
+export { Logo, type LogoProps } from './Logo';
 export { Modal, type ModalPlacement, type ModalProps } from './Modal';
 export { MotionProvider } from './MotionProvider';
 export { OutcomeBadge, type OutcomeBadgeProps, type ScanOutcomeValue } from './OutcomeBadge';

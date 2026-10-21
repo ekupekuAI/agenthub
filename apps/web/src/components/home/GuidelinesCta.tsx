@@ -1,4 +1,4 @@
-import { ArrowRightIcon, BookOpenIcon, Button, Container, Reveal, Seal } from '../ui';
+import { ArrowRightIcon, BookOpenIcon, Button, Container, Logo, Reveal } from '../ui';
 
 /** Closing band: read the rules before installing or publishing. */
 export function GuidelinesCta() {
@@ -10,7 +10,7 @@ export function GuidelinesCta() {
       <Container>
         <Reveal>
           <div className="relative overflow-hidden rounded-panel border border-border-strong bg-surface-1 p-6 shadow-panel sm:p-10 lg:p-12">
-            <Seal
+            <Logo
               size={168}
               className="pointer-events-none absolute -top-10 -right-10 opacity-[0.07] sm:-top-6 sm:-right-6"
             />

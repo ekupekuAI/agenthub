@@ -14,6 +14,13 @@
 import { usePathname } from 'next/navigation';
 import { useEffect, useRef } from 'react';
 import { prefersLightEffects } from '../../lib/device';
+import {
+  LOGO_CHECK_PATH,
+  LOGO_CHECK_WIDTH,
+  LOGO_LEGS_PATH,
+  LOGO_LEGS_WIDTH,
+  LOGO_TILE,
+} from './Logo';
 import { THEME_COLORS } from './theme';
 
 const MIURA_GAMMA = (65 * Math.PI) / 180;
@@ -25,10 +32,6 @@ const THETA_MAX = (84 * Math.PI) / 180;
 const FOV = (30 * Math.PI) / 180;
 const FLOATS = 8;
 const CELLS = 6;
-
-const SEAL_PATH =
-  'M12 2.8A2.6 2.6 0 0 1 16.6 4.03A2.6 2.6 0 0 1 19.97 7.4A2.6 2.6 0 0 1 21.2 12A2.6 2.6 0 0 1 19.97 16.6A2.6 2.6 0 0 1 16.6 19.97A2.6 2.6 0 0 1 12 21.2A2.6 2.6 0 0 1 7.4 19.97A2.6 2.6 0 0 1 4.03 16.6A2.6 2.6 0 0 1 2.8 12A2.6 2.6 0 0 1 4.03 7.4A2.6 2.6 0 0 1 7.4 4.03A2.6 2.6 0 0 1 12 2.8Z';
-const CHECK_PATH = 'M8.3 12.2L10.8 14.7L15.7 9.6';
 
 interface Sheet {
   fill: string;
@@ -251,12 +254,16 @@ function drawSheet(
   ctx.translate(pad, pad);
   ctx.scale(seal / 24, seal / 24);
   ctx.fillStyle = '#C5F04A';
-  ctx.fill(new Path2D(SEAL_PATH));
+  ctx.beginPath();
+  ctx.roundRect(LOGO_TILE.x, LOGO_TILE.y, LOGO_TILE.size, LOGO_TILE.size, LOGO_TILE.radius);
+  ctx.fill();
   ctx.strokeStyle = '#0B0C0E';
-  ctx.lineWidth = 1.9;
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
-  ctx.stroke(new Path2D(CHECK_PATH));
+  ctx.lineWidth = LOGO_LEGS_WIDTH;
+  ctx.stroke(new Path2D(LOGO_LEGS_PATH));
+  ctx.lineWidth = LOGO_CHECK_WIDTH;
+  ctx.stroke(new Path2D(LOGO_CHECK_PATH));
   ctx.restore();
   ctx.fillStyle = sheet.mark;
   ctx.font = `500 18px ${fonts.mono}`;
